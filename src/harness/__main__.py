@@ -19,12 +19,10 @@ import subprocess
 import sys
 
 import typer
-from click.exceptions import UsageError
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
-from typer.core import TyperGroup
 
 from . import __version__
 from .config import global_config_path, load_settings
@@ -36,28 +34,10 @@ from .tools import ToolExecutor, registry, set_shell_timeout
 GITHUB_SPEC = "git+https://github.com/jetsamsun/sun_agent_harness.git"
 
 
-class _TaskFallbackGroup(TyperGroup):
-    """A click Group that treats an unknown first token as a free-form task.
-
-    `sun "统计文件数"` → routes to the `run` command with the whole string as
-    the task, instead of erroring with "No such command".
-    """
-
-    def resolve_command(self, ctx, args):
-        try:
-            return super().resolve_command(ctx, args)
-        except UsageError:
-            # Not a known subcommand: hand everything to `run` as one task.
-            cmd = self.get_command(ctx, "run")
-            task = " ".join(args)
-            return "run", cmd, [task]
-
-
 app = typer.Typer(
     add_completion=False,
     help="Sun Agent Harness — a minimal agent for your terminal.",
     no_args_is_help=False,
-    cls=_TaskFallbackGroup,
 )
 console = Console()
 
@@ -283,22 +263,34 @@ def help_cmd(ctx: typer.Context) -> None:
     console.print(ctx.parent.get_help() if ctx.parent else ctx.get_help())
 
 
-@app.callback(
-    invoke_without_command=True,
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-)
+@app.callback(invoke_without_command=True)
 def _main(ctx: typer.Context) -> None:
     """Sun Agent Harness. Run `sun help` for commands."""
-    if ctx.invoked_subcommand is not None:
-        return
-    args = ctx.args
-    if not args:
-        # bare `sun` → interactive REPL
+    # Bare `sun` with no subcommand → interactive REPL.
+    if ctx.invoked_subcommand is None:
         _run_task(None)
-    else:
-        # `sun "some natural language task"` → run it
-        _run_task(" ".join(args))
+
+
+# Known subcommand names — anything else as the first arg is treated as a
+# free-form task and routed to `run`.
+_KNOWN_COMMANDS = {"run", "model", "config", "update", "remove", "version", "help"}
+
+
+def main() -> None:
+    """Console-script entry point.
+
+    Pre-processes argv so `sun "some task"` works: if the first non-flag
+    argument isn't a known subcommand, inject `run` before it. This is more
+    robust across install methods than hacking click's command resolution.
+    """
+    argv = sys.argv[1:]
+    if argv:
+        first = argv[0]
+        # Leave --help/-h and known commands alone; everything else → run.
+        if not first.startswith("-") and first not in _KNOWN_COMMANDS:
+            sys.argv = [sys.argv[0], "run", *argv]
+    app()
 
 
 if __name__ == "__main__":
-    app()
+    main()

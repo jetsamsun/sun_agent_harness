@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-sun = "harness.__main__:app"
+sun = "harness.__main__:main"
 
 [dependency-groups]
 dev = [

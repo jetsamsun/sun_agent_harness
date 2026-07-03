@@ -97,11 +97,26 @@ def test_model_command_non_interactive(isolated_config):
     assert data["model"] == "mflag"
 
 
-def test_freeform_task_routes_to_run(isolated_config):
-    """`sun <freeform>` with no key should reach run() and complain about the
-    missing key — proving the fallback routing works (not 'No such command')."""
-    from harness.__main__ import app
+def test_freeform_task_routes_to_run(isolated_config, monkeypatch):
+    """`sun <freeform>` should inject `run` and reach run() (not error with
+    'No such command'). We drive the real main() entry point via argv."""
+    import harness.__main__ as m
 
-    result = CliRunner().invoke(app, ["统计文件数量"])
-    assert "No such command" not in result.stdout
-    assert "sun model" in result.stdout  # the "configure your key" hint
+    monkeypatch.delenv("SUN_API_KEY", raising=False)
+    monkeypatch.setattr(m.sys, "argv", ["sun", "统计文件数量"])
+
+    # No key configured → run() exits with code 1 after printing the hint.
+    with pytest.raises(SystemExit):
+        m.main()
+    # argv should have had `run` injected as the subcommand.
+    assert m.sys.argv[1] == "run"
+
+
+def test_known_command_not_rerouted(isolated_config, monkeypatch):
+    """A real subcommand like `version` must NOT get `run` injected."""
+    import harness.__main__ as m
+
+    monkeypatch.setattr(m.sys, "argv", ["sun", "version"])
+    with pytest.raises(SystemExit):
+        m.main()
+    assert m.sys.argv[1] == "version"  # unchanged

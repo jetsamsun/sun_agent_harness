@@ -1,5 +1,11 @@
 # Sun Agent Harness
 
+![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+[![CI](https://github.com/jetsamsun/sun_agent_harness/actions/workflows/ci.yml/badge.svg)](https://github.com/jetsamsun/sun_agent_harness/actions/workflows/ci.yml)
+![Managed with uv](https://img.shields.io/badge/managed%20with-uv-de5fe9.svg)
+![OpenAI-compatible](https://img.shields.io/badge/LLM-OpenAI--compatible-412991.svg)
+
 A minimal, self-built **agent harness** for the Linux command line. No heavy
 frameworks — a thin, fully-controllable kernel that turns each LLM decision
 into a reliable side effect.
@@ -7,6 +13,34 @@ into a reliable side effect.
 > **Stage 1 goal:** a single agent that closes the loop in a shell —
 > take a natural-language task, autonomously call tools, observe results,
 > and keep going until the task is done or judged impossible.
+
+## Demo
+
+```console
+$ sun "创建一个 hello.py 打印 hello world，然后运行它验证输出"
+→ write_file {"path": "hello.py", "content": "print(\"hello world\")\n"}
+  ✓
+→ run_shell {"command": "python3 hello.py"}
+  ✓ hello world
+→ finish {"summary": "已创建 hello.py，运行后输出 hello world，验证通过。"}
+╭──────────────────────── ✅ Done ────────────────────────╮
+│ 已创建 hello.py，运行后输出 hello world，验证通过。       │
+╰─────────────────────────────────────────────────────────╯
+```
+
+The agent wrote the file, **actually ran it**, observed the real output, and
+only then declared success via the `finish` tool — no fabricated results.
+
+## Install & use in 30 seconds
+
+```bash
+# 1. install (also installs uv if missing)
+curl -fsSL https://raw.githubusercontent.com/jetsamsun/sun_agent_harness/main/install/install.sh | bash
+# 2. configure your model
+sun model
+# 3. go
+sun "how many files are in this directory?"
+```
 
 ## Architecture
 
@@ -30,7 +64,7 @@ CLI (__main__.py)           ← interactive REPL / one-shot, rich output
 3. **No fabricated results.** The system prompt forbids inventing output;
    safety gates real side effects.
 
-## Quick start
+## Full guide
 
 ### Install (one line)
 

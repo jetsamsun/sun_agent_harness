@@ -32,16 +32,62 @@ CLI (__main__.py)           ← interactive REPL / one-shot, rich output
 
 ## Quick start
 
+### Install (one line)
+
 ```bash
-uv sync                       # install
-cp .env.example .env          # add your API key
-uv run sun "how many .py files are in this directory?"   # one-shot
-uv run sun                    # interactive REPL
+curl -fsSL https://raw.githubusercontent.com/jetsamsun/sun_agent_harness/main/install/install.sh | bash
 ```
 
-## Configuration
+This installs `uv` (if missing) and the `sun` CLI globally from GitHub.
 
-All settings are env vars prefixed `SUN_` (see `.env.example`).
+<details>
+<summary>Or install manually with uv</summary>
+
+```bash
+uv tool install git+https://github.com/jetsamsun/sun_agent_harness.git
+```
+</details>
+
+### Configure
+
+```bash
+sun model                     # interactive: set API key / base URL / model
+# or non-interactively:
+sun model --key <KEY> --base-url https://api.deepseek.com/v1 --model deepseek-v4-flash
+```
+
+Config is saved to `~/.config/sun/config.toml` and used from any directory.
+
+### Use
+
+```bash
+sun "how many .py files are in this directory?"   # one-shot task
+sun                            # interactive REPL
+sun config                     # show effective config (key masked)
+sun help                       # list commands
+sun update                     # reinstall latest from GitHub
+sun remove                     # uninstall
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `sun "<task>"` | Run a task (natural language) |
+| `sun run "<task>"` | Same as above (explicit) |
+| `sun model` | Configure LLM (interactive or via `--key/--base-url/--model`) |
+| `sun config` | Show effective configuration |
+| `sun update` | Reinstall latest version from GitHub |
+| `sun remove` | Uninstall |
+| `sun version` | Show version |
+| `sun help` | List all commands |
+
+## Configuration precedence
+
+Highest to lowest: **environment vars (`SUN_*`)** → **project `.env`** →
+**global `~/.config/sun/config.toml`** → defaults. So a project can override
+the global model with a local `.env`, and a one-off `SUN_MODEL=... sun ...`
+overrides everything.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
@@ -49,8 +95,19 @@ All settings are env vars prefixed `SUN_` (see `.env.example`).
 | `SUN_BASE_URL` | api.openai.com/v1 | Endpoint |
 | `SUN_MODEL` | gpt-4o-mini | Model name |
 | `SUN_MAX_TURNS` | 25 | Hard cap on reasoning↔tool iterations |
+| `SUN_MAX_RETRIES` | 4 | Retry attempts on transient LLM errors |
 | `SUN_SHELL_TIMEOUT` | 60 | Seconds before a shell command is killed |
 | `SUN_REQUIRE_CONFIRMATION` | true | Prompt y/n on dangerous ops |
+
+## Development
+
+```bash
+git clone https://github.com/jetsamsun/sun_agent_harness.git
+cd sun_agent_harness
+uv sync
+uv run pytest -q                # tests (no API key needed)
+uv run sun "your task"          # run from the source tree
+```
 
 ## Roadmap
 

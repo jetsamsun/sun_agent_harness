@@ -17,6 +17,7 @@
 - [x] **M2 多轮循环** — AgentLoop + finish + max-turns, case 3 ✅ (write→run→verify 快排)
 - [x] **M3 全工具 + 安全** — read/write_file, dangerous-op confirm, case 2 ✅ (删最大文件，删前弹确认)
 - [x] **M4 打磨** — retry/backoff, CI, CONTRIBUTING, ruff format, pytest ✅
+- [x] **M5 分发/CLI 产品化** — 子命令(model/config/update/remove/help/version) + 全局配置(~/.config/sun/config.toml) + install.sh(GitHub raw 一行安装) ✅
 
 ### 已验证 (with DeepSeek deepseek-v4-flash)
 - Case 1 统计 .py 文件数 → 正确得 12

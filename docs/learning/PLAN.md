@@ -18,7 +18,7 @@
 | 1 | pyproject.toml 与项目骨架 | ✅ 已掌握 | ✅ |
 | 2 | 入口函数：`sun` 命令如何跑起来 | ✅ 已掌握 | ✅ |
 | 3 | typer 子命令与参数路由 | ✅ 已掌握 | ✅ |
-| 4 | 配置管理：key 存哪、优先级 | ⬜ 未开始 | ⬜ |
+| 4 | 配置管理：key 存哪、优先级 | ✅ 已掌握 | ✅ |
 | 5 | 打包与安装机制（uv tool install/uninstall） | ⬜ 未开始 | ⬜ |
 | 6 | 分发：install.sh 一行安装 | ⬜ 未开始 | ⬜ |
 | 7 | 毕业项目：从零做一个 mini CLI 工具 | ⬜ 未开始 | ⬜ |
@@ -88,3 +88,4 @@
 - 2026-07-07 · 小节 1 · 掌握 pyproject.toml 骨架 + [project.scripts] 机制 · ✅ 验证通过（链路讲全、别名写法正确）
 - 2026-07-08 · 小节 2 · 掌握 main() 入口 + argv 预处理机制 · ✅ 验证通过（调用链四步正确、理解预处理解决"省掉 run"问题）
 - 2026-07-08 · 小节 3 · 掌握 typer 子命令注册/路由 + Argument vs Option + callback + 自由文本分流 · ✅ 验证通过（两路径区别正确、新增子命令两步骤正确）
+- 2026-07-09 · 小节 4 · 掌握配置四层优先级（env > .env > 全局 toml > 默认）+ settings_customise_sources 元组顺序定优先级 + env_prefix 前缀 + 自定义 _GlobalTomlSource + 读写分离（tomllib 只读不写） · ✅ 验证通过（实测逐层覆盖，同时存在 env/.env 时预测 env 赢且实测正确）

@@ -20,7 +20,7 @@
 | 3 | typer 子命令与参数路由 | ✅ 已掌握 | ✅ |
 | 4 | 配置管理：key 存哪、优先级 | ✅ 已掌握 | ✅ |
 | 5 | 打包与安装机制（uv tool install/uninstall） | ✅ 已掌握 | ✅ |
-| 6 | 分发：install.sh 一行安装 | ⬜ 未开始 | ⬜ |
+| 6 | 分发：install.sh 一行安装 | ✅ 已掌握 | ✅ |
 | 7 | 毕业项目：从零做一个 mini CLI 工具 | ⬜ 未开始 | ⬜ |
 
 状态图例：⬜ 未开始 · 🔵 进行中 · ✅ 已掌握 · ⏸ 暂停
@@ -90,3 +90,4 @@
 - 2026-07-08 · 小节 3 · 掌握 typer 子命令注册/路由 + Argument vs Option + callback + 自由文本分流 · ✅ 验证通过（两路径区别正确、新增子命令两步骤正确）
 - 2026-07-09 · 小节 4 · 掌握配置四层优先级（env > .env > 全局 toml > 默认）+ settings_customise_sources 元组顺序定优先级 + env_prefix 前缀 + 自定义 _GlobalTomlSource + 读写分离（tomllib 只读不写） · ✅ 验证通过（实测逐层覆盖，同时存在 env/.env 时预测 env 赢且实测正确）
 - 2026-07-12 · 小节 5 · 掌握打包安装机制三大认知：① 打包=把 src/+entry_points+元数据凝固成快照；② 命令名在 entry_points.txt（`sun = harness.__main__:main`），不在代码里，uv 据此生成 launcher；③ uv tool install 装到隔离 venv（Windows 在 %APPDATA%\uv\tools\<包>\），不污染系统 Python，卸载连根端掉不留残。三种运行方式实测对比：`uv run sun` 读 src/ 实时源码、本地装/GitHub 装读隔离 venv 快照——改源码版本号后 uv run 反映、全局 sun 不变，亲手证明"装的是快照非链接"。GitHub 装带 @<commit> 冻结语义 · ✅ 验证通过（答对"两入口读不同代码"、卸载命令正确、三实验全通）
+- 2026-07-13 · 小节 6 · 掌握 install.sh 一行安装分发：① `curl -fsSL <url> | bash` = curl 下载脚本文本(不落盘) + 管道喂给 bash 执行；raw.githubusercontent.com 给原始文本正好能喂 bash；② `set -euo pipefail` 三件套（出错即停/未定义变量报错/管道任一环失败即失败）是安全带；③ 四步流程：确保 uv → uv tool install --force git+https → 配 ~/.local/bin PATH（否则 command not found）→ 引导 sun model；④ install.sh 是包在「uv tool install」外的一层壳，负责前置条件，二者不是一回事。`bash -n` = 语法体检 · ✅ 验证通过（bash -n 语法过、三段核心逻辑复述全对）

@@ -115,11 +115,9 @@
 学习一阶段 ≈ 吃透了产品 [roadmap Stage 1](../roadmap.md) 的 **M5 分发/CLI 产品化**。  
 产品 Stage 1（Linux CLI 闭环 M0–M5）本身也已完成。
 
-### 下一步（二选一，随时开）
+### 下一步
 
-| 方向 | 做什么 | 何时开 |
-|------|--------|--------|
-| **A · 产品 Stage 2** | 按 roadmap：先做 `edit_file` / 分页读 / 搜文件 —— 从「跑命令」进化到「能改代码」 | 想继续打磨 Sun |
-| **B · 学习二阶段** | 另开计划：Agent 内核（loop / tools / safety / context）—— 以 Sun 源码为活教材 | 想吃透 harness 原理 |
-
-不必现在定。需要开哪条，直接说一声即可。
+| 方向 | 状态 | 入口 |
+|------|------|------|
+| **B · 学习二阶段（Agent 内核）** | 🔵 已开计划 · 一周吃透 Stage 1 | [PLAN_phase2_agent.md](./PLAN_phase2_agent.md) |
+| **A · 产品 Stage 2** | ⬜ 二阶段毕业后再开 | [roadmap.md](../roadmap.md) Stage 2 |

@@ -19,7 +19,7 @@
 
 | 日期 | 星期 | 天 | 小节 | 核心文件 | 状态 | 验证 |
 |------|------|----|------|----------|------|------|
-| 07-22 | 三 | D1 | 鸟瞰：数据流与接线 | `__main__.py`（`_build_loop` / `_on_event`） | ⬜ | ⬜ |
+| 07-22 | 三 | D1 | 鸟瞰：数据流与接线 | `__main__.py`（`_build_loop` / `_on_event`） | ✅ | ✅ |
 | 07-23 | 四 | D2 | 工具注册与 schema | `tools/registry.py` · `builtins.py` | ⬜ | ⬜ |
 | 07-24 | 五 | D3 | 执行器与安全门 | `tools/executor.py` · `safety.py` | ⬜ | ⬜ |
 | — | 六日 | — | **周末跳过** | — | — | — |
@@ -148,8 +148,8 @@
 
 ## 刻意不学（本周边界）
 
-- Stage 2：`edit_file` / 代码搜索 / 测试自修 / 上下文压缩 —— 吃透 Stage 1 再说
-- 多 Agent、MCP、GUI、流式 —— roadmap 明确 out of scope
+- Stage 2：`edit_file` / 代码搜索 / 测试自修 / 上下文压缩 / REPL 会话记忆 / 计划模式 —— 吃透 Stage 1 再说
+- Stage 3：多模型路由、多 Agent、持久记忆、MCP、沙箱 —— 见 [roadmap 北极星](../roadmap.md)，本周不碰
 - 一阶段已会的打包安装 —— 除非毕业项目需要再装一次
 
 ---
@@ -157,6 +157,8 @@
 ## 学习日志（每节完成后追加）
 
 <!-- 格式：日期 · 小节 · 结论 · 验证是否通过 -->
+
+- **2026-07-22 · D1 · 鸟瞰**：`_build_loop` 装配 loop；工具经 `registry` 在 import builtins 时注册，`loop.run` 里 `openai_schemas()` 交给 `llm.chat`；`on_event` 只影响 CLI 展示。验证通过。
 
 ---
 

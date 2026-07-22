@@ -86,6 +86,46 @@ def test_finish_tool_signals_completion():
     assert result["summary"] == "done"
 
 
+def test_resolve_reasoning_effort_auto_none_for_terra_with_tools():
+    from harness.llm import resolve_reasoning_effort
+
+    tools = [{"type": "function", "function": {"name": "finish"}}]
+    assert resolve_reasoning_effort("gpt-5.6-terra", tools, "") == "none"
+    assert resolve_reasoning_effort("gpt-5.6-terra", None, "") is None
+    assert resolve_reasoning_effort("gpt-4o-mini", tools, "") is None
+    assert resolve_reasoning_effort("gpt-5.6-terra", tools, "low") == "low"
+
+
+def test_llm_passes_reasoning_effort_none_for_terra_tools(monkeypatch):
+    from harness.config import Settings
+    from harness.llm import LLMClient
+
+    client = LLMClient(Settings(api_key="x", model="gpt-5.6-terra", max_retries=1))
+    seen: dict = {}
+
+    class _Msg:
+        content = "ok"
+        tool_calls = None
+
+    class _Choice:
+        message = _Msg()
+
+    class _Resp:
+        choices = [_Choice()]
+
+    def fake_create(**kwargs):
+        seen.update(kwargs)
+        return _Resp()
+
+    monkeypatch.setattr(client._client.chat.completions, "create", fake_create)
+    client.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "finish"}}],
+    )
+    assert seen.get("reasoning_effort") == "none"
+    assert seen.get("tool_choice") == "auto"
+
+
 def test_llm_retries_transient_then_succeeds(monkeypatch):
     """A transient error should be retried, not surfaced immediately."""
     import harness.llm as llm_mod

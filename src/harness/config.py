@@ -78,6 +78,13 @@ class Settings(BaseSettings):
 
     temperature: float = 0.0
 
+    reasoning_effort: str = ""
+    """Optional Chat Completions `reasoning_effort` (e.g. none/low/medium/high).
+
+    Empty = auto: for gpt-5.3+ models with tools, send `none` so function
+    calling works on /v1/chat/completions. Set explicitly to override.
+    """
+
     max_retries: int = 4
     """Retry attempts for transient LLM errors (network, rate limit, 5xx)."""
 

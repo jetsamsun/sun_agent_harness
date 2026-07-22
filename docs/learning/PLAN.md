@@ -120,4 +120,8 @@
 | 方向 | 状态 | 入口 |
 |------|------|------|
 | **B · 学习二阶段（Agent 内核）** | 🔵 已开计划 · 一周吃透 Stage 1 | [PLAN_phase2_agent.md](./PLAN_phase2_agent.md) |
-| **A · 产品 Stage 2** | ⬜ 二阶段毕业后再开 | [roadmap.md](../roadmap.md) Stage 2 |
+| **A · 产品 Stage 2** | ⬜ 毕业后开 · 编码+需求澄清+拆步+测通（单模型） | [roadmap.md](../roadmap.md) Stage 2 |
+| **A2 · 产品 Stage 2.5** | ⬜ Stage 2 主闭环后 · 薄多模型按阶段换脑 | [roadmap.md](../roadmap.md) Stage 2.5 |
+| **C · 产品 Stage 3** | ⬜ · 多 agent / 持久记忆 / MCP | [roadmap.md](../roadmap.md) Stage 3 |
+
+产品北极星与能力对照表见 [roadmap.md 顶部](../roadmap.md)。

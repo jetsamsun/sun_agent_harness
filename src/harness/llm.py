@@ -29,6 +29,22 @@ _RETRYABLE = (
     InternalServerError,
 )
 
+# On /v1/chat/completions, gpt-5.3+ reject function tools unless
+# reasoning_effort is explicitly "none" (or you migrate to /v1/responses).
+_TOOLS_NEED_REASONING_NONE_PREFIXES = ("gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6")
+
+
+def resolve_reasoning_effort(model: str, tools: list[dict[str, Any]] | None, configured: str) -> str | None:
+    """Pick reasoning_effort for a Chat Completions request, or None to omit."""
+    if configured:
+        return configured
+    if not tools:
+        return None
+    name = model.lower()
+    if name.startswith(_TOOLS_NEED_REASONING_NONE_PREFIXES):
+        return "none"
+    return None
+
 
 class LLMClient:
     def __init__(self, settings: Settings) -> None:
@@ -56,6 +72,11 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        effort = resolve_reasoning_effort(
+            self._settings.model, tools, self._settings.reasoning_effort
+        )
+        if effort is not None:
+            kwargs["reasoning_effort"] = effort
 
         attempts = max(1, self._settings.max_retries)
         last_exc: Exception | None = None

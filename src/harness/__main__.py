@@ -211,6 +211,10 @@ def config() -> None:
     table.add_row("base_url", s.base_url)
     table.add_row("model", s.model)
     table.add_row("max_turns", str(s.max_turns))
+    table.add_row(
+        "reasoning_effort",
+        s.reasoning_effort or "[dim](auto)[/dim]",
+    )
     table.add_row("shell_timeout", str(s.shell_timeout))
     console.print(table)
     console.print(f"[dim]Config file: {global_config_path()}[/dim]")

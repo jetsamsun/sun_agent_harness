@@ -21,7 +21,7 @@
 |------|------|----|------|----------|------|------|
 | 07-22 | 三 | D1 | 鸟瞰：数据流与接线 | `__main__.py`（`_build_loop` / `_on_event`） | ✅ | ✅ |
 | 07-23 | 四 | D2 | 工具注册与 schema | `tools/registry.py` · `builtins.py` | ✅ | ✅ |
-| 07-24 | 五 | D3 | 执行器与安全门 | `tools/executor.py` · `safety.py` | ⬜ | ⬜ |
+| 07-24 | 五 | D3 | 执行器与安全门 | `tools/executor.py` · `safety.py` | ✅ | ✅ |
 | — | 六日 | — | **周末跳过** | — | — | — |
 | 07-27 | 一 | D4 | 上下文与 LLM 调用 | `context.py` · `llm.py` | ⬜ | ⬜ |
 | 07-28 | 二 | D5 | AgentLoop 心脏 | `loop.py` | ⬜ | ⬜ |
@@ -160,6 +160,7 @@
 
 - **2026-07-22 · D1 · 鸟瞰**：`_build_loop` 装配 loop；工具经 `registry` 在 import builtins 时注册，`loop.run` 里 `openai_schemas()` 交给 `llm.chat`；`on_event` 只影响 CLI 展示。验证通过。
 - **2026-07-23 · D2 · 工具注册**：`@registry.tool` 从签名+docstring 推 schema；`dangerous` 不进 schema；`finish` 作可验证停止。验证通过。
+- **2026-07-24 · D3 · 执行器/安全**：流水线 解析→查表→安全门→调用→截断；非 TTY 危险命令自动拒绝；截断防 Context 爆。验证通过。
 
 ---
 

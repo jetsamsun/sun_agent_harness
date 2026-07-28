@@ -3,6 +3,8 @@
 > **目标**：以 Sun 源码为活教材，吃透「最小智能体」如何工作。学完能用自己的话
 > 画出完整数据流，并能从零手敲一个能跑通「问句 → 调工具 → 观察 → finish」的 mini harness。
 >
+> **产品最终目标原则**（全阶段共用，见 [roadmap](../roadmap.md)）：用最精简的代码，实现最核心的功能，做成 AI 自动化长任务编程工具。
+>
 > **时间盒**：7 个工作日（约每天 60–90 分钟），**周末跳过**。源码内核 ≈ 500 行，够吃透、不够拖。
 > **日历**：2026-07-22（三）起 → 2026-07-30（四）结；中间 7/25–7/26 周末休息。
 >
@@ -23,8 +25,8 @@
 | 07-23 | 四 | D2 | 工具注册与 schema | `tools/registry.py` · `builtins.py` | ✅ | ✅ |
 | 07-24 | 五 | D3 | 执行器与安全门 | `tools/executor.py` · `safety.py` | ✅ | ✅ |
 | — | 六日 | — | **周末跳过** | — | — | — |
-| 07-27 | 一 | D4 | 上下文与 LLM 调用 | `context.py` · `llm.py` | ⬜ | ⬜ |
-| 07-28 | 二 | D5 | AgentLoop 心脏 | `loop.py` | ⬜ | ⬜ |
+| 07-27 | 一 | D4 | 上下文与 LLM 调用 | `context.py` · `llm.py` | ✅ | ✅ |
+| 07-28 | 二 | D5 | AgentLoop 心脏 | `loop.py` | ✅ | ✅ |
 | 07-29 | 三 | D6 | 端到端复盘 + 测试即说明书 | `tests/test_wiring.py` · 真跑一次 | ⬜ | ⬜ |
 | 07-30 | 四 | D7 | 毕业：手敲 mini harness | 自建小项目（不抄贴） | ⬜ | ⬜ |
 
@@ -161,6 +163,8 @@
 - **2026-07-22 · D1 · 鸟瞰**：`_build_loop` 装配 loop；工具经 `registry` 在 import builtins 时注册，`loop.run` 里 `openai_schemas()` 交给 `llm.chat`；`on_event` 只影响 CLI 展示。验证通过。
 - **2026-07-23 · D2 · 工具注册**：`@registry.tool` 从签名+docstring 推 schema；`dangerous` 不进 schema；`finish` 作可验证停止。验证通过。
 - **2026-07-24 · D3 · 执行器/安全**：流水线 解析→查表→安全门→调用→截断；非 TTY 危险命令自动拒绝；截断防 Context 爆。验证通过。
+- **2026-07-27 · D4 · 上下文/LLM**：messages 按 system→user→assistant→tool 增长；max_retries≠max_turns；400 等坏请求不重试。验证通过。
+- **2026-07-28 · D5 · Loop**：三种退出（无 tool_calls / finish / max_turns）；finish 作可验证停止；真跑写删与 max_turns stop。验证通过。
 
 ---
 

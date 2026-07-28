@@ -125,3 +125,5 @@
 | **C · 产品 Stage 3** | ⬜ · 多 agent / 持久记忆 / MCP | [roadmap.md](../roadmap.md) Stage 3 |
 
 产品北极星与能力对照表见 [roadmap.md 顶部](../roadmap.md)。
+
+**最终目标原则（全阶段共用）：** 用最精简的代码，实现最核心的功能，完成 AI 自动化长任务编程工具。

@@ -27,7 +27,7 @@
 | — | 六日 | — | **周末跳过** | — | — | — |
 | 07-27 | 一 | D4 | 上下文与 LLM 调用 | `context.py` · `llm.py` | ✅ | ✅ |
 | 07-28 | 二 | D5 | AgentLoop 心脏 | `loop.py` | ✅ | ✅ |
-| 07-29 | 三 | D6 | 端到端复盘 + 测试即说明书 | `tests/test_wiring.py` · 真跑一次 | ⬜ | ⬜ |
+| 07-29 | 三 | D6 | 端到端复盘 + 测试即说明书 | `tests/test_wiring.py` · 真跑一次 | ✅ | ✅ |
 | 07-30 | 四 | D7 | 毕业：手敲 mini harness | 自建小项目（不抄贴） | ⬜ | ⬜ |
 
 状态图例：⬜ 未开始 · 🔵 进行中 · ✅ 已掌握 · ⏸ 暂停
@@ -165,6 +165,7 @@
 - **2026-07-24 · D3 · 执行器/安全**：流水线 解析→查表→安全门→调用→截断；非 TTY 危险命令自动拒绝；截断防 Context 爆。验证通过。
 - **2026-07-27 · D4 · 上下文/LLM**：messages 按 system→user→assistant→tool 增长；max_retries≠max_turns；400 等坏请求不重试。验证通过。
 - **2026-07-28 · D5 · Loop**：三种退出（无 tool_calls / finish / max_turns）；finish 作可验证停止；真跑写删与 max_turns stop。验证通过。
+- **2026-07-29 · D6 · 复盘**：端到端串图；wiring 14 绿；Case 1 真跑；cheatsheet 草稿；safety/截断风险与 `/dev/null` 回归契约。验证通过。
 
 ---
 

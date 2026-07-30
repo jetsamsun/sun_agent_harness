@@ -106,9 +106,18 @@ CLI (__main__) 装配 loop
 
 ## 自检（D7 前勾）
 
-- [ ] 能默画上面架构图  
-- [ ] 逐文件一句话（不看表）  
-- [ ] 三种停止 + finish 为何存在  
-- [ ] safety 拦/不拦（含 `/dev/null`）  
-- [ ] mini harness 跑通一条验收句  
-- [ ] 本速查表定稿  
+- [x] 能默画上面架构图  
+- [x] 逐文件一句话（不看表）  
+- [x] 三种停止 + finish 为何存在  
+- [x] safety 拦/不拦（含 `/dev/null`）  
+- [x] mini harness 跑通一条验收句（`miniharness`：写 hi.py → python 验证 → finish）  
+- [x] 本速查表定稿  
+
+### Mini vs Sun（D7）
+
+| | Mini (`WWW/miniharness`) | Sun |
+|--|------|-----|
+| 结构 | 单文件闭环 | 多模块 |
+| schema | 手写 JSON | `@registry.tool` 推断 |
+| 安全/截断 | 几乎无 / 简单切片 | assess+confirm / `_truncate` |
+| 停止 | 同：finish / 无 tool_calls / max_turns | 同 |

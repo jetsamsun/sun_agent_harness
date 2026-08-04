@@ -67,7 +67,11 @@ SYSTEM_PROMPT_BASE = """你是 Sun，运行在用户本机上的自主编程助�
 ## 一般规则
 - 没有专用工具时再用 run_shell。
 - 交互 REPL 中保留历史，不要让用户重复已说过的事实。
-- 任务完成且验证通过后调用 finish，摘要简洁。
+- 优先用一次性命令（如 `python -c` / curl 管道）完成查询，避免为小事落盘脚本。
+- 若任务中创建了临时文件（如 `_weather.py`、`weather*.txt`、`tmp_*`、仅用于调试的草稿），
+  必须在 finish 之前删除它们（Windows: `del` / `Remove-Item`；Unix: `rm`）。
+  不要删除用户原有项目文件、`.git`、配置或测试夹具；只清本任务产生的临时产物。
+- 任务完成且验证通过、临时文件已清理后，再调用 finish，摘要简洁。
 - 不可能或不安全时用 finish 说明原因，不要猜。
 """
 
@@ -228,15 +232,18 @@ class AgentLoop:
             tool_calls = getattr(message, "tool_calls", None)
 
             # No tool call: the model is talking to us. Treat text as final.
+            # CLI shows a single Done panel (streamed deltas are buffered, not printed).
             if not tool_calls:
                 text = message.content or ""
-                if text and not chat.streamed:
-                    self._emit(Event("think", {"text": text, "turn": turn}))
-                elif chat.streamed and streamed_bits:
+                if chat.streamed and streamed_bits:
                     self._emit(
                         Event(
                             "think",
-                            {"text": "".join(streamed_bits), "turn": turn, "streamed": True},
+                            {
+                                "text": "".join(streamed_bits),
+                                "turn": turn,
+                                "streamed": True,
+                            },
                         )
                     )
                 self._emit_finish(text, turn, usage, run_started)

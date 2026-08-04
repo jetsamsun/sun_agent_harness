@@ -58,18 +58,22 @@ console = Console()
 # Rendering helpers
 # ---------------------------------------------------------------------------
 def _make_event_printer(*, show_usage: bool = True):
-    streaming = {"active": False}
+    # Buffer streamed text: flush as 💭 only before a tool call.
+    # Final answers go solely into the green Done panel (no double print).
+    stream_buf: list[str] = []
+
+    def _flush_stream_as_think() -> None:
+        if not stream_buf:
+            return
+        text = "".join(stream_buf).strip()
+        stream_buf.clear()
+        if text:
+            console.print(f"[dim]💭 {text}[/dim]")
 
     def printer(event: Event) -> None:
         if event.kind == "think_delta":
-            if not streaming["active"]:
-                console.print("[dim]💭 [/dim]", end="")
-                streaming["active"] = True
-            console.print(event.data["text"], end="", markup=False, highlight=False)
+            stream_buf.append(event.data["text"])
             return
-        if streaming["active"]:
-            console.print()
-            streaming["active"] = False
 
         if event.kind == "env":
             env = event.data.get("env") or {}
@@ -79,9 +83,13 @@ def _make_event_printer(*, show_usage: bool = True):
             )
         elif event.kind == "think":
             if event.data.get("streamed"):
+                # Final streamed answer → Done panel will show it; drop buffer.
+                stream_buf.clear()
                 return
+            _flush_stream_as_think()
             console.print(f"[dim]💭 {event.data['text']}[/dim]")
         elif event.kind == "tool_call":
+            _flush_stream_as_think()
             args = event.data["args"]
             try:
                 args = json.dumps(json.loads(args), ensure_ascii=False)
@@ -106,10 +114,14 @@ def _make_event_printer(*, show_usage: bool = True):
             timing = f" [dim]({ms}ms)[/dim]" if ms is not None else ""
             console.print(f"  {marker} [dim]{preview}[/dim]{timing}")
         elif event.kind == "finish":
-            console.print(Panel(event.data["summary"], title="✅ Done", border_style="green"))
+            stream_buf.clear()
+            console.print(
+                Panel(event.data["summary"], title="✅ Done", border_style="green")
+            )
             if show_usage and event.data.get("usage"):
                 _print_usage(event.data["usage"])
         elif event.kind == "stop":
+            stream_buf.clear()
             console.print(
                 Panel(
                     f"Stopped: {event.data['reason']}",

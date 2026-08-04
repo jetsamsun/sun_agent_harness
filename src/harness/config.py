@@ -99,8 +99,11 @@ class Settings(BaseSettings):
     require_confirmation: bool = True
     """Whether dangerous operations prompt for y/n confirmation."""
 
-    confirm_edits: bool = True
-    """Show a unified diff and ask before write_file / edit_file."""
+    confirm_edits: bool = False
+    """Show a unified diff and ask before write_file / edit_file.
+
+    Default off for smooth local use; set true (env/config) when you want a gate.
+    """
 
     auto_git_checkpoint: bool = True
     """Before the first file mutation of a task, commit/record a git checkpoint."""

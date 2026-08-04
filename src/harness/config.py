@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from pydantic import field_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -22,6 +23,9 @@ from pydantic_settings import (
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
+
+# Hard ceiling for input context (DeepSeek V4-class 1M windows).
+CONTEXT_TOKEN_HARD_CAP = 1_000_000
 
 
 def global_config_path() -> Path:
@@ -123,6 +127,26 @@ class Settings(BaseSettings):
 
     enable_trace: bool = True
     """Persist structured events (think / tool / turn / usage) to a JSONL file."""
+
+    # --- Context compression (Stage 2④) ---
+    context_compress: bool = True
+    """Fold older turns into a summary when context exceeds the token budget."""
+
+    context_max_tokens: int = 900_000
+    """Compress when estimate exceeds this. Hard-capped at 1_000_000. 0 disables."""
+
+    context_keep_recent: int = 24
+    """How many recent messages to keep verbatim after a compress pass."""
+
+    context_compress_llm: bool = True
+    """Use a short LLM call to refine the summary; falls back to heuristic."""
+
+    @field_validator("context_max_tokens")
+    @classmethod
+    def _clamp_context_max_tokens(cls, value: int) -> int:
+        if value <= 0:
+            return 0
+        return min(int(value), CONTEXT_TOKEN_HARD_CAP)
 
     @classmethod
     def settings_customise_sources(

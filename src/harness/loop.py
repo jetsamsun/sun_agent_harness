@@ -73,6 +73,8 @@ SYSTEM_PROMPT_BASE = """你是 Sun，运行在用户本机上的自主编程助�
   不要删除用户原有项目文件、`.git`、配置或测试夹具；只清本任务产生的临时产物。
 - 任务完成且验证通过、临时文件已清理后，再调用 finish，摘要简洁。
 - 不可能或不安全时用 finish 说明原因，不要猜。
+- 长任务中系统可能把较早轮次压成「先前对话摘要」；请信任摘要并继续，
+  需要细节时再 read_file / 搜索，不要要求用户重复已说过的目标。
 """
 
 
@@ -191,6 +193,8 @@ class AgentLoop:
         run_started = time.perf_counter()
 
         for turn in range(1, self._settings.max_turns + 1):
+            self._maybe_compress_context(ctx, turn)
+
             streamed_bits: list[str] = []
 
             def on_delta(
@@ -316,6 +320,24 @@ class AgentLoop:
         )
         self._emit(Event("usage", usage.as_dict()))
         return f"[stopped] reached max turns ({self._settings.max_turns}) without finishing."
+
+    def _maybe_compress_context(self, ctx: Context, turn: int) -> None:
+        settings = self._settings
+        if not settings.context_compress or settings.context_max_tokens <= 0:
+            return
+        summarize_fn = None
+        if settings.context_compress_llm:
+            summarize_fn = self._llm.summarize_transcript
+        # Settings already clamp to CONTEXT_TOKEN_HARD_CAP (1M).
+        info = ctx.maybe_compress(
+            max_tokens=settings.context_max_tokens,
+            keep_recent=settings.context_keep_recent,
+            summarize_fn=summarize_fn,
+        )
+        if info is None:
+            return
+        info["turn"] = turn
+        self._emit(Event("compress", info))
 
     def _emit_finish(
         self,

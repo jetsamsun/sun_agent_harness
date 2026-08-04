@@ -106,7 +106,7 @@ streaming · context compression (in-memory only for now).
 
 ### ④ 记忆与上下文（改大项目不爆窗口；记忆管理的第一层）
 - [x] **REPL 会话记忆（内存）**：`session=True` 跨 `sun>` 复用 Context；`clear` / `tokens` / `exit`
-- [ ] 上下文压缩：多轮编辑历史滚动摘要（延后；仍靠裁剪 + 用户 clear）
+- [x] 上下文压缩：超 `context_max_tokens`（默认 90 万，硬顶 1M）时折叠旧轮为摘要 + 保留近尾
 - [x] 大输出裁剪：tool result 进 Context 前 head+tail 软截断（默认 12k 字符）
 - [ ] 相关文件召回：按任务只把相关文件读进上下文，不全塞（延后）
 - [x] 工作记忆工具：`todo_write` / 任务清单（在 ⑤；REPL 会话内不每行 reset）

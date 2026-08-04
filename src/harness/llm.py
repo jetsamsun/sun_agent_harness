@@ -126,6 +126,14 @@ class _AssembledMessage:
     tool_calls: list[_AssembledToolCall] | None
 
 
+_COMPRESS_SYSTEM = (
+    "你是对话压缩器。把下方 agent 多轮记录压成简洁中文摘要，保留："
+    "用户目标、已改文件/关键决策、失败过的尝试、未完成事项。"
+    "不要工具原文，不要编造未出现的事实。200–400 字为宜。"
+    "开头写：[先前对话摘要]"
+)  # noqa: E501 — prompt kept as one readable block
+
+
 class LLMClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -133,6 +141,25 @@ class LLMClient:
             api_key=settings.api_key,
             base_url=settings.base_url,
         )
+
+    def summarize_transcript(self, messages: list[dict[str, Any]]) -> str:
+        """Compress dropped history into one short Chinese summary (no tools)."""
+        from .context import heuristic_summary
+
+        seed = heuristic_summary(messages, max_chars=6000)
+        result = self.chat(
+            [
+                {"role": "system", "content": _COMPRESS_SYSTEM},
+                {
+                    "role": "user",
+                    "content": "请压缩以下记录：\n\n" + seed,
+                },
+            ],
+            tools=None,
+            on_delta=None,
+        )
+        content = getattr(result.message, "content", None) or ""
+        return content.strip()
 
     def chat(
         self,

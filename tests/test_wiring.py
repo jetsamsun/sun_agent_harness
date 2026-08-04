@@ -693,6 +693,50 @@ def test_trace_sink_writes_jsonl(tmp_path):
     assert len(seen) == 2
 
 
+def test_context_compress_folds_old_turns():
+    from harness.context import Context
+
+    ctx = Context("sys")
+    for i in range(20):
+        ctx.add_user(f"user goal {i} " + ("x" * 200))
+
+        class _Fn:
+            name = "run_shell"
+            arguments = '{"command": "echo hi"}'
+
+        class _TC:
+            id = f"c{i}"
+            function = _Fn()
+
+        class _Msg:
+            content = ""
+            tool_calls = [_TC()]
+
+        ctx.add_assistant(_Msg())
+        fat = json.dumps({"success": True, "stdout": "Y" * 5000})
+        ctx.add_tool_result(f"c{i}", fat)
+
+    before = ctx.token_estimate()
+    info = ctx.maybe_compress(max_tokens=800, keep_recent=6, summarize_fn=None)
+    assert info is not None
+    assert info["after_tokens"] < before
+    assert info["dropped_messages"] > 0
+    msgs = ctx.messages()
+    assert msgs[0]["role"] == "system"
+    assert msgs[1]["role"] == "user"
+    assert "摘要" in msgs[1]["content"]
+    # Kept window must not start with an orphan tool message.
+    assert msgs[2]["role"] in {"user", "assistant"}
+
+
+def test_context_compress_noop_under_budget():
+    from harness.context import Context
+
+    ctx = Context("sys")
+    ctx.add_user("hi")
+    assert ctx.maybe_compress(max_tokens=50_000, keep_recent=8) is None
+
+
 def test_run_shell_decodes_utf8_not_locale():
     """Shell stdout must decode as UTF-8 (not Windows GBK default)."""
     settings = Settings(require_confirmation=False)

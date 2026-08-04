@@ -120,7 +120,7 @@
 | 方向 | 状态 | 入口 |
 |------|------|------|
 | **B · 学习二阶段（Agent 内核）** | ✅ 已毕业 · D1–D7 | [PLAN_phase2_agent.md](./PLAN_phase2_agent.md) |
-| **A · 产品 Stage 2** | ✅ ①–⑥ 核心已落地；压缩/召回/断点/后台 shell 仍延后 | [roadmap.md](../roadmap.md) Stage 2 |
+| **A · 产品 Stage 2** | ✅ ①–⑥ + 上下文压缩；召回/断点/后台 shell 仍延后 | [roadmap.md](../roadmap.md) Stage 2 |
 | **A2 · 产品 Stage 2.5** | ⬜ Stage 2 主闭环后 · 薄多模型按阶段换脑 | [roadmap.md](../roadmap.md) Stage 2.5 |
 | **C · 产品 Stage 3** | ⬜ · 多 agent / 持久记忆 / MCP | [roadmap.md](../roadmap.md) Stage 3 |
 

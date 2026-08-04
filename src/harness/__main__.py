@@ -81,6 +81,12 @@ def _make_event_printer(*, show_usage: bool = True):
                 f"[dim]🖥 环境: {env.get('family', '?')} · "
                 f"cwd={env.get('cwd', '?')}[/dim]"
             )
+        elif event.kind == "compress":
+            console.print(
+                f"[dim]🗜 上下文压缩 · {event.data.get('method')} · "
+                f"{event.data.get('before_tokens')}→{event.data.get('after_tokens')} tok · "
+                f"drop {event.data.get('dropped_messages')} msgs[/dim]"
+            )
         elif event.kind == "think":
             if event.data.get("streamed"):
                 # Final streamed answer → Done panel will show it; drop buffer.
@@ -395,6 +401,10 @@ def config() -> None:
         "trace_log",
         s.trace_log.strip() or "[dim](.sun/traces/<ts>.jsonl)[/dim]",
     )
+    table.add_row("context_compress", str(s.context_compress))
+    table.add_row("context_max_tokens", str(s.context_max_tokens))
+    table.add_row("context_keep_recent", str(s.context_keep_recent))
+    table.add_row("context_compress_llm", str(s.context_compress_llm))
     console.print(table)
     console.print(f"[dim]Config file: {global_config_path()}[/dim]")
 

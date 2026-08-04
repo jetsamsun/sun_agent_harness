@@ -13,6 +13,9 @@ build/
 .pytest_cache/
 .ruff_cache/
 
+# Local agent traces
+.sun/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -52,8 +52,10 @@ CLI (__main__.py)           ← interactive REPL / one-shot, rich output
        └─ Tools
             ├─ ToolRegistry           ← @tool decorator → JSON schema
             ├─ ToolExecutor           ← validate · safety-gate · run · truncate
-            └─ built-ins: run_shell, read_file, write_file, finish
-                 └─ Safety (safety.py) ← dangerous-command blocklist + confirm
+            └─ built-ins: files/edit/search/verify + plan/todo + git_* + finish
+                 └─ Safety: shell blocklist · edit diffs · workspace sandbox · git checkpoint
+            └─ REPL session Context (in-memory; clear / tokens)
+            └─ Observability: streaming · JSONL trace · token/cost footer
 ```
 
 ### Design principles

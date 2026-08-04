@@ -54,10 +54,17 @@ class ToolExecutor:
     def _safety_gate(self, tool: Tool, args: dict[str, Any]) -> dict[str, Any] | None:
         if not self._settings.require_confirmation:
             return None
-        if tool.name != "run_shell":
-            return None
-        command = str(args.get("command", ""))
-        reason = assess_command(command)
+
+        reason: str | None = None
+        detail = ""
+        if tool.name == "run_shell":
+            command = str(args.get("command", ""))
+            reason = assess_command(command)
+            detail = command
+        elif tool.dangerous:
+            reason = f"dangerous tool ({tool.name})"
+            detail = json.dumps(args, ensure_ascii=False)
+
         if reason is None:
             return None
         if self._confirm is None:
@@ -65,7 +72,7 @@ class ToolExecutor:
                 "success": False,
                 "error": f"Blocked dangerous operation ({reason}); no confirmation channel.",
             }
-        approved = self._confirm(command, reason)
+        approved = self._confirm(detail or tool.name, reason)
         if not approved:
             return {"success": False, "error": f"User declined: {reason}"}
         return None

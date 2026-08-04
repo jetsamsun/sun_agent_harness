@@ -16,12 +16,12 @@
 
 | 能力 | 含义 | 落在哪 | 现状 |
 |------|------|--------|------|
-| **读/搜/精改** | 定位代码并小块修改 | Stage 2① | 仅有整文件 write |
-| **跑测自修** | 改→测→红→再改→绿 | Stage 2② | 能 write→run，无测/ lint 工具化 |
-| **需求补充** | 含糊需求先问清再动手 | Stage 2⑤（新增） | 无 |
-| **任务拆分** | 计划 + todo，按步执行 | Stage 2④⑤ | 无 |
-| **长任务** | 批准、断点、预算、插话 | Stage 2⑤ | 仅 max_turns |
-| **会话/项目记忆** | 跨轮不忘；跨天/跨进程可续 | Stage 2④ → Stage 3③ | 仅任务内 Context |
+| **读/搜/精改** | 定位代码并小块修改 | Stage 2① | ✅ ① 已落地（edit/search/find/list + 分页读） |
+| **跑测自修** | 改→测→红→再改→绿 | Stage 2② | ✅ ② 已落地（check_syntax / run_tests / run_lint + 未绿不 finish） |
+| **需求补充** | 含糊需求先问清再动手 | Stage 2⑤ | ✅ `ask_user` |
+| **任务拆分** | 计划 + todo，按步执行 | Stage 2⑤ | ✅ `propose_plan` + `todo_write` |
+| **长任务** | 批准、断点、预算、插话 | Stage 2⑤ | ✅ 批准/插话/max_turns；断点与后台 shell 仍待做 |
+| **会话/项目记忆** | 跨轮不忘；跨天/跨进程可续 | Stage 2④ → Stage 3③ | ✅ REPL 内存会话；持久化见 3③ |
 | **多模型分责** | 规划/编码/审查等用不同模型 | Stage 2.5 薄路由 → Stage 3①② | 单 model |
 | **外接工具** | MCP / 插件 | Stage 3④ | 无（ZCode 侧可另用） |
 
@@ -85,45 +85,45 @@ streaming · context compression (in-memory only for now).
 
 ### ① 编辑地基（最优先，质变的一步）
 没有精准编辑就改不了代码。当前只有 `write_file`（整文件覆盖），必须补：
-- [ ] `edit_file` — 字符串替换（找旧文本→换新文本，不动其余），对标 Claude Code 的 Edit
-- [ ] `read_file` 分页 — offset+limit 只读大文件的某段，带行号
-- [ ] `search_files` — 按内容正则搜代码，定位函数/变量在哪（grep）
-- [ ] `find_files` — 按文件名 glob 找文件（`*.py`）
-- [ ] 列目录树 — 看项目结构
-- [ ] 强化 system prompt：先读后改、改小块不整写、改完必验证
+- [x] `edit_file` — 字符串替换（找旧文本→换新文本，不动其余），对标 Claude Code 的 Edit
+- [x] `read_file` 分页 — offset+limit 只读大文件的某段，带行号
+- [x] `search_files` — 按内容正则搜代码，定位函数/变量在哪（grep）
+- [x] `find_files` — 按文件名 glob 找文件（`*.py`）
+- [x] 列目录 — `list_dir` 看一层结构（非递归树，够用）
+- [x] 强化 system prompt：先读后改、改小块不整写、改完必验证
 
 ### ② 验证闭环（让它"改对"而不只是"改了"）
-- [ ] 跑测试（pytest/npm test），失败信息喂回让它自修 → TDD 循环：改→跑→看红→再改→绿
-- [ ] 跑 linter/类型检查（ruff/mypy/eslint），自动发现问题
-- [ ] 写文件后自动语法检查（`python -m py_compile` 等）
-- [ ] **未绿不 finish**：system prompt + loop 约定——计划中的验收命令未通过不得调用 `finish`
-- [ ] 可选：`run_tests` 专用工具（封装常用测试命令，输出结构化失败摘要）
+- [x] 跑测试（`run_tests`：pytest/npm/go 自动探测或显式命令）→ 失败摘要喂回自修
+- [x] 跑 linter（`run_lint`：ruff / npm lint 自动探测或显式命令）
+- [x] 语法检查（`check_syntax`：`.py` py_compile / `.js` node --check）
+- [x] **未绿不 finish**：prompt 约束 + loop 软门闩（上次 `run_tests` 失败则拒绝 finish）
+- [x] `run_tests` 结构化摘要（passed / summary / truncated output）
 
 ### ③ 安全与可控（改代码是高风险操作）
-- [ ] 每次编辑先展示 diff（可选确认）
-- [ ] git 集成：改前自动 checkpoint，改错能回滚；自动生成 commit
-- [ ] 限制只在项目目录内操作，防误改项目外文件
+- [x] 每次编辑先展示 diff（`confirm_edits`；TTY 确认，默认开）
+- [x] git 集成：`auto_git_checkpoint` + `git_checkpoint` / `git_rollback` / `git_commit`
+- [x] 限制只在 `workspace_root`（默认 cwd）内 write/edit，防路径逃逸
 
 ### ④ 记忆与上下文（改大项目不爆窗口；记忆管理的第一层）
-- [ ] **REPL 会话记忆（内存）**：交互模式跨 `sun>` 行复用同一 Context（修「问完就忘」）
-- [ ] 上下文压缩：多轮编辑历史滚动摘要
-- [ ] 大文件/大输出裁剪：读整文件、测试输出几千行 → 只留关键部分
-- [ ] 相关文件召回：按任务只把相关文件读进上下文，不全塞
-- [ ] 工作记忆工具：`todo_write` / 任务清单，长任务中途可勾进度（对标 Cursor/Claude Code）
+- [x] **REPL 会话记忆（内存）**：`session=True` 跨 `sun>` 复用 Context；`clear` / `tokens` / `exit`
+- [ ] 上下文压缩：多轮编辑历史滚动摘要（延后；仍靠裁剪 + 用户 clear）
+- [x] 大输出裁剪：tool result 进 Context 前 head+tail 软截断（默认 12k 字符）
+- [ ] 相关文件召回：按任务只把相关文件读进上下文，不全塞（延后）
+- [x] 工作记忆工具：`todo_write` / 任务清单（在 ⑤；REPL 会话内不每行 reset）
 
 ### ⑤ 需求 → 拆步 → 长任务执行（你最关心的主闭环，单模型先跑通）
-- [ ] **需求澄清门**：目标含糊或缺约束时，先提问补充（范围/验收/技术栈），得到确认再进计划；支持用户中途追加需求并改计划
-- [ ] **计划模式**：大任务先列步骤 + **每步验收标准** → 用户批准 → 再动手（待确认→进行中）
-- [ ] 按计划驱动 `todo_write`：拆分后的子任务与计划步骤一一对应，完成勾选
-- [ ] 任务级断点：中断后可从最近 checkpoint 续跑（不必重头）
-- [ ] 预算门：max_turns / 预估 token·费用·墙钟上限，超限优雅 stop + 摘要
-- [ ] 人机插话：执行中可 pause / 改计划 / 补充约束
-- [ ] 长命令：后台 shell + 轮询日志（避免把 loop 卡死在一次性超长命令）
+- [x] **需求澄清门**：`ask_user`（TTY 问答；非 TTY 失败）
+- [x] **计划模式**：`propose_plan`（步骤 + 验收标准 → 用户批准/驳回备注）
+- [x] **todo_write**：任务内进度清单（pending/in_progress/done）；每任务开始 reset
+- [ ] 任务级断点：中断后可从最近 checkpoint 续跑（跨进程；延后）
+- [x] 预算门：沿用 `max_turns` 优雅 stop（费用/墙钟统计见 ⑥）
+- [x] 人机插话（轻量）：执行中可再 `ask_user` / 重新 `propose_plan`（无独立 pause 命令）
+- [ ] 长命令：后台 shell + 轮询日志（延后）
 
 ### ⑥ 可观测与体验（编码/长任务共用）
-- [ ] 结构化 trace log（每轮 think / tool / 耗时 / token）
-- [ ] 流式输出（思考与工具进度边出边显）
-- [ ] 费用/token 统计（方便选模型与控预算）
+- [x] 结构化 trace log：JSONL（`.sun/traces/<ts>.jsonl`；`enable_trace` / `trace_log`）
+- [x] 流式输出：assistant 文本 delta（`streaming`；工具仍等完整 args 再执行）
+- [x] 费用/token 统计：每轮 usage + 结束 footer（粗估价表；`show_usage`）
 
 ### Stage 2 建议顺序（自家用）
 1. **① 编辑地基** → 能精改  

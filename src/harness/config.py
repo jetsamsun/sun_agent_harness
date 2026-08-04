@@ -99,6 +99,28 @@ class Settings(BaseSettings):
     require_confirmation: bool = True
     """Whether dangerous operations prompt for y/n confirmation."""
 
+    confirm_edits: bool = True
+    """Show a unified diff and ask before write_file / edit_file."""
+
+    auto_git_checkpoint: bool = True
+    """Before the first file mutation of a task, commit/record a git checkpoint."""
+
+    workspace_root: str = ""
+    """Directory file writes must stay inside. Empty = process cwd at startup."""
+
+    # --- Observability (Stage 2⑥) ---
+    streaming: bool = True
+    """Stream assistant text deltas to the CLI while the model thinks."""
+
+    show_usage: bool = True
+    """Print token / timing / estimated cost after each task."""
+
+    trace_log: str = ""
+    """JSONL trace path. Empty = write `.sun/traces/<timestamp>.jsonl` when enabled."""
+
+    enable_trace: bool = True
+    """Persist structured events (think / tool / turn / usage) to a JSONL file."""
+
     @classmethod
     def settings_customise_sources(
         cls,

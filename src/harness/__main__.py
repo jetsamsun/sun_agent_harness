@@ -17,6 +17,7 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -27,9 +28,20 @@ from rich.table import Table
 from . import __version__
 from .config import global_config_path, load_settings
 from .config_writer import read_config, write_config
+from .gitops import set_auto_git_checkpoint
 from .llm import LLMClient
 from .loop import AgentLoop, Event
-from .tools import ToolExecutor, registry, set_shell_timeout
+from .tools import (
+    ToolExecutor,
+    registry,
+    set_ask_fn,
+    set_confirm_edits,
+    set_edit_confirm_fn,
+    set_plan_confirm_fn,
+    set_shell_timeout,
+)
+from .trace import TraceSink, default_trace_path
+from .workspace import set_workspace_root
 
 GITHUB_SPEC = "git+https://github.com/jetsamsun/sun_agent_harness.git"
 
@@ -45,9 +57,29 @@ console = Console()
 # ---------------------------------------------------------------------------
 # Rendering helpers
 # ---------------------------------------------------------------------------
-def _make_event_printer():
+def _make_event_printer(*, show_usage: bool = True):
+    streaming = {"active": False}
+
     def printer(event: Event) -> None:
-        if event.kind == "think":
+        if event.kind == "think_delta":
+            if not streaming["active"]:
+                console.print("[dim]💭 [/dim]", end="")
+                streaming["active"] = True
+            console.print(event.data["text"], end="", markup=False, highlight=False)
+            return
+        if streaming["active"]:
+            console.print()
+            streaming["active"] = False
+
+        if event.kind == "env":
+            env = event.data.get("env") or {}
+            console.print(
+                f"[dim]🖥 环境: {env.get('family', '?')} · "
+                f"cwd={env.get('cwd', '?')}[/dim]"
+            )
+        elif event.kind == "think":
+            if event.data.get("streamed"):
+                return
             console.print(f"[dim]💭 {event.data['text']}[/dim]")
         elif event.kind == "tool_call":
             args = event.data["args"]
@@ -70,9 +102,13 @@ def _make_event_printer():
             preview = str(preview).strip()
             if len(preview) > 500:
                 preview = preview[:500] + " …"
-            console.print(f"  {marker} [dim]{preview}[/dim]")
+            ms = event.data.get("latency_ms")
+            timing = f" [dim]({ms}ms)[/dim]" if ms is not None else ""
+            console.print(f"  {marker} [dim]{preview}[/dim]{timing}")
         elif event.kind == "finish":
             console.print(Panel(event.data["summary"], title="✅ Done", border_style="green"))
+            if show_usage and event.data.get("usage"):
+                _print_usage(event.data["usage"])
         elif event.kind == "stop":
             console.print(
                 Panel(
@@ -81,8 +117,30 @@ def _make_event_printer():
                     border_style="yellow",
                 )
             )
+            if show_usage and event.data.get("usage"):
+                _print_usage(event.data["usage"])
+        elif event.kind == "usage" and show_usage:
+            # finish/stop already printed; skip duplicate unless orphaned
+            pass
 
     return printer
+
+
+def _print_usage(usage: dict) -> None:
+    from .usage import UsageTotals
+
+    totals = UsageTotals(
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        completion_tokens=int(usage.get("completion_tokens") or 0),
+        llm_calls=int(usage.get("llm_calls") or 0),
+        tool_calls=int(usage.get("tool_calls") or 0),
+        llm_ms=float(usage.get("llm_ms") or 0),
+        tool_ms=float(usage.get("tool_ms") or 0),
+        model=str(usage.get("model") or ""),
+    )
+    wall = usage.get("wall_ms")
+    extra = f" · wall {wall/1000:.1f}s" if wall is not None else ""
+    console.print(f"[dim]⏱ {totals.summary_line()}{extra}[/dim]")
 
 
 def _make_confirm_fn():
@@ -102,31 +160,127 @@ def _make_confirm_fn():
     return confirm
 
 
-def _build_loop() -> AgentLoop:
+def _make_ask_fn():
+    def ask(question: str) -> str:
+        console.print(Panel(question, title="❓ Sun asks", border_style="cyan"))
+        return Prompt.ask("Your answer").strip()
+
+    return ask
+
+
+def _make_plan_confirm_fn():
+    def confirm_plan(title: str, steps: list) -> tuple[bool, str]:
+        lines = [f"[bold]{title}[/bold]", ""]
+        for step in steps:
+            lines.append(f"[cyan]{step['id']}[/cyan]. {step['title']}")
+            lines.append(f"   acceptance: {step['acceptance']}")
+        console.print(Panel("\n".join(lines), title="📋 Proposed plan", border_style="magenta"))
+        if not sys.stdin.isatty():
+            console.print("[yellow]No interactive TTY — plan not approved.[/yellow]")
+            return False, "no TTY"
+        ok = Confirm.ask("Approve this plan?", default=False)
+        if ok:
+            return True, ""
+        note = Prompt.ask("What should change?", default="").strip()
+        return False, note or "rejected"
+
+    return confirm_plan
+
+
+def _make_edit_confirm_fn():
+    def confirm_edit(path: str, diff: str) -> bool:
+        preview = diff if len(diff) <= 4000 else diff[:4000] + "\n…"
+        console.print(Panel(preview, title=f"📝 Edit {path}", border_style="yellow"))
+        if not sys.stdin.isatty():
+            console.print("[yellow]No interactive TTY — declining edit.[/yellow]")
+            return False
+        return Confirm.ask("Apply this edit?", default=True)
+
+    return confirm_edit
+
+
+def _build_loop() -> tuple[AgentLoop, TraceSink | None]:
     settings = load_settings()
     if not settings.api_key:
         console.print("[red]No API key configured.[/red] Run [bold]sun model[/bold] to set it up.")
         raise typer.Exit(1)
+    root = settings.workspace_root.strip() or str(Path.cwd())
+    set_workspace_root(root)
     set_shell_timeout(settings.shell_timeout)
+    set_confirm_edits(settings.confirm_edits)
+    set_auto_git_checkpoint(settings.auto_git_checkpoint)
+    set_ask_fn(_make_ask_fn())
+    set_plan_confirm_fn(_make_plan_confirm_fn())
+    set_edit_confirm_fn(_make_edit_confirm_fn())
     llm = LLMClient(settings)
     executor = ToolExecutor(registry, settings, confirm_fn=_make_confirm_fn())
-    return AgentLoop(llm, registry, executor, settings, on_event=_make_event_printer())
+    printer = _make_event_printer(show_usage=settings.show_usage)
+    sink: TraceSink | None = None
+    if settings.enable_trace:
+        path = settings.trace_log.strip() or str(default_trace_path())
+        sink = TraceSink(path, on_event=printer)
+        console.print(f"[dim]trace → {path}[/dim]")
+        on_event = sink
+    else:
+        on_event = printer
+    return AgentLoop(llm, registry, executor, settings, on_event=on_event), sink
+
+
+_REPL_EXIT = {"exit", "quit", "/exit", "/quit"}
+_REPL_CLEAR = {"clear", "/clear"}
+_REPL_TOKENS = {"tokens", "/tokens"}
 
 
 def _run_task(task: str | None) -> None:
-    loop = _build_loop()
-    if task:
-        loop.run(task)
-        return
-    console.print("[bold]Sun[/bold] — interactive mode. Ctrl-C to exit.")
-    while True:
-        try:
-            task = console.input("[bold cyan]sun>[/bold cyan] ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print("\nbye")
-            raise typer.Exit(0) from None
+    loop, sink = _build_loop()
+    try:
         if task:
-            loop.run(task)
+            # One-shot: no session memory across process invocations.
+            loop.run(task, session=False)
+            return
+        console.print(
+            "[bold]Sun[/bold] — interactive mode (session memory on). "
+            "[dim]clear · tokens · exit[/dim]"
+        )
+        while True:
+            try:
+                line = console.input("[bold cyan]sun>[/bold cyan] ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\nbye")
+                raise typer.Exit(0) from None
+            if not line:
+                continue
+            low = line.lower()
+            if low in _REPL_EXIT:
+                console.print("bye")
+                raise typer.Exit(0)
+            if low in _REPL_CLEAR:
+                loop.clear_session()
+                console.print("[dim]Session cleared.[/dim]")
+                continue
+            if low in _REPL_TOKENS:
+                ctx = loop.session_context()
+                usage = loop.session_usage()
+                if ctx is None:
+                    console.print("[dim]No session yet (0 tokens).[/dim]")
+                else:
+                    n = ctx.token_estimate()
+                    turns = ctx.user_turns()
+                    label = f"~{n} ctx tokens" if n >= 0 else "ctx tokens unknown"
+                    console.print(
+                        f"[dim]{label} · {turns} user turn(s) · "
+                        f"api {usage.total_tokens} tok[/dim]"
+                    )
+                continue
+            loop.run(line, session=True)
+            ctx = loop.session_context()
+            if ctx is not None:
+                n = ctx.token_estimate()
+                if n >= 0:
+                    console.print(f"[dim]session ~{n} ctx tokens[/dim]")
+    finally:
+        if sink is not None:
+            sink.close()
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +370,19 @@ def config() -> None:
         s.reasoning_effort or "[dim](auto)[/dim]",
     )
     table.add_row("shell_timeout", str(s.shell_timeout))
+    table.add_row("confirm_edits", str(s.confirm_edits))
+    table.add_row("auto_git_checkpoint", str(s.auto_git_checkpoint))
+    table.add_row(
+        "workspace_root",
+        s.workspace_root.strip() or "[dim](cwd)[/dim]",
+    )
+    table.add_row("streaming", str(s.streaming))
+    table.add_row("show_usage", str(s.show_usage))
+    table.add_row("enable_trace", str(s.enable_trace))
+    table.add_row(
+        "trace_log",
+        s.trace_log.strip() or "[dim](.sun/traces/<ts>.jsonl)[/dim]",
+    )
     console.print(table)
     console.print(f"[dim]Config file: {global_config_path()}[/dim]")
 

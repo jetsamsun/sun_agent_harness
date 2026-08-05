@@ -41,6 +41,7 @@ from .persona import (
     open_persona_in_editor,
     resolve_persona_path,
 )
+from .repl_input import read_repl_message
 from .session_store import SessionStore, SessionStoreError
 from .tools import (
     ToolExecutor,
@@ -62,14 +63,40 @@ app = typer.Typer(
     help="Sun Agent Harness — a minimal agent for your terminal.",
     no_args_is_help=False,
 )
-console = Console()
+console = Console(safe_box=True)
+
+
+def _configure_stdio() -> None:
+    """Avoid GBK UnicodeEncodeError on Windows consoles (emoji / CJK mix)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _cprint(*args: object, **kwargs: object) -> None:
+    """console.print that never crashes the agent on encoding errors."""
+    try:
+        console.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        plain = []
+        for a in args:
+            s = str(a)
+            plain.append(s.encode("ascii", errors="replace").decode("ascii"))
+        try:
+            console.print(*plain, **kwargs)
+        except Exception:  # noqa: BLE001
+            sys.stdout.write(" ".join(plain) + "\n")
 
 
 # ---------------------------------------------------------------------------
 # Rendering helpers
 # ---------------------------------------------------------------------------
 def _make_event_printer(*, show_usage: bool = True):
-    # Buffer streamed text: flush as 💭 only before a tool call.
+    # Buffer streamed text: flush as think only before a tool call.
     # Final answers go solely into the green Done panel (no double print).
     stream_buf: list[str] = []
 
@@ -79,7 +106,7 @@ def _make_event_printer(*, show_usage: bool = True):
         text = "".join(stream_buf).strip()
         stream_buf.clear()
         if text:
-            console.print(f"[dim]💭 {text}[/dim]")
+            _cprint(f"[dim]think: {text}[/dim]")
 
     def printer(event: Event) -> None:
         if event.kind == "think_delta":
@@ -88,14 +115,14 @@ def _make_event_printer(*, show_usage: bool = True):
 
         if event.kind == "env":
             env = event.data.get("env") or {}
-            console.print(
-                f"[dim]🖥 环境: {env.get('family', '?')} · "
+            _cprint(
+                f"[dim]env: {env.get('family', '?')} · "
                 f"cwd={env.get('cwd', '?')}[/dim]"
             )
         elif event.kind == "compress":
-            console.print(
-                f"[dim]🗜 上下文压缩 · {event.data.get('method')} · "
-                f"{event.data.get('before_tokens')}→{event.data.get('after_tokens')} tok · "
+            _cprint(
+                f"[dim]compress: {event.data.get('method')} · "
+                f"{event.data.get('before_tokens')}->{event.data.get('after_tokens')} tok · "
                 f"drop {event.data.get('dropped_messages')} msgs[/dim]"
             )
         elif event.kind == "think":
@@ -104,7 +131,7 @@ def _make_event_printer(*, show_usage: bool = True):
                 stream_buf.clear()
                 return
             _flush_stream_as_think()
-            console.print(f"[dim]💭 {event.data['text']}[/dim]")
+            _cprint(f"[dim]think: {event.data['text']}[/dim]")
         elif event.kind == "tool_call":
             _flush_stream_as_think()
             args = event.data["args"]
@@ -112,11 +139,11 @@ def _make_event_printer(*, show_usage: bool = True):
                 args = json.dumps(json.loads(args), ensure_ascii=False)
             except Exception:  # noqa: BLE001
                 pass
-            console.print(f"[cyan]→ {event.data['name']}[/cyan] [dim]{args}[/dim]")
+            _cprint(f"[cyan]-> {event.data['name']}[/cyan] [dim]{args}[/dim]")
         elif event.kind == "tool_result":
             result = event.data["result"]
             ok = result.get("success")
-            marker = "[green]✓[/green]" if ok else "[red]✗[/red]"
+            marker = "[green]OK[/green]" if ok else "[red]ERR[/red]"
             preview = (
                 result.get("stdout")
                 or result.get("content")
@@ -126,23 +153,23 @@ def _make_event_printer(*, show_usage: bool = True):
             )
             preview = str(preview).strip()
             if len(preview) > 500:
-                preview = preview[:500] + " …"
+                preview = preview[:500] + " ..."
             ms = event.data.get("latency_ms")
             timing = f" [dim]({ms}ms)[/dim]" if ms is not None else ""
-            console.print(f"  {marker} [dim]{preview}[/dim]{timing}")
+            _cprint(f"  {marker} [dim]{preview}[/dim]{timing}")
         elif event.kind == "finish":
             stream_buf.clear()
-            console.print(
-                Panel(event.data["summary"], title="✅ Done", border_style="green")
+            _cprint(
+                Panel(event.data["summary"], title="Done", border_style="green")
             )
             if show_usage and event.data.get("usage"):
                 _print_usage(event.data["usage"])
         elif event.kind == "stop":
             stream_buf.clear()
-            console.print(
+            _cprint(
                 Panel(
                     f"Stopped: {event.data['reason']}",
-                    title="⏹ Stopped",
+                    title="Stopped",
                     border_style="yellow",
                 )
             )
@@ -155,16 +182,16 @@ def _make_event_printer(*, show_usage: bool = True):
             action = event.data.get("action")
             sid = event.data.get("id", "?")
             if action == "new":
-                console.print(f"[dim]💾 session {sid} (redis)[/dim]")
+                _cprint(f"[dim]session {sid} (redis)[/dim]")
             elif action == "save":
-                console.print(
-                    f"[dim]💾 saved {sid} · turns={event.data.get('user_turns')} "
+                _cprint(
+                    f"[dim]saved {sid} · turns={event.data.get('user_turns')} "
                     f"· {event.data.get('status')}[/dim]"
                 )
             elif action == "resume":
                 title = event.data.get("title") or ""
                 extra = f" · {title}" if title else ""
-                console.print(f"[dim]💾 resumed {sid}{extra}[/dim]")
+                _cprint(f"[dim]resumed {sid}{extra}[/dim]")
 
     return printer
 
@@ -186,7 +213,7 @@ def _print_usage(usage: dict) -> None:
     )
     wall = usage.get("wall_ms")
     extra = f" · wall {wall/1000:.1f}s" if wall is not None else ""
-    console.print(f"[dim]⏱ {totals.summary_line()}{extra}[/dim]")
+    _cprint(f"[dim]time {totals.summary_line()}{extra}[/dim]")
 
 
 def _make_confirm_fn():
@@ -258,6 +285,7 @@ def _connect_store(settings) -> SessionStore | None:
 
 
 def _build_loop() -> tuple[AgentLoop, TraceSink | None]:
+    _configure_stdio()
     settings = load_settings()
     if not settings.api_key:
         console.print("[red]No API key configured.[/red] Run [bold]sun model[/bold] to set it up.")
@@ -414,6 +442,18 @@ def _print_memory_table(rows: list) -> None:
     console.print(table)
 
 
+def _read_sun_prompt() -> str:
+    """One REPL turn; drains multi-line pastes into a single message."""
+
+    def prompt_line() -> str:
+        return console.input("[bold cyan]sun>[/bold cyan] ")
+
+    def cont_line() -> str:
+        return console.input("[bold cyan]... [/bold cyan] ")
+
+    return read_repl_message(prompt_line=prompt_line, cont_prompt_line=cont_line)
+
+
 def _run_task(task: str | None) -> None:
     loop, sink = _build_loop()
     try:
@@ -428,15 +468,20 @@ def _run_task(task: str | None) -> None:
             "[dim yellow](set SUN_REDIS_URL for /resume)[/dim yellow]"
         )
         console.print(f"[bold]Sun[/bold] — interactive mode. {redis_hint}")
+        console.print(
+            "[dim]多行：直接粘贴即可；或 /paste 后粘贴，单独一行 --- 结束。"
+            " 行末 \\ 也可续行。[/dim]"
+        )
         while True:
             try:
-                line = console.input("[bold cyan]sun>[/bold cyan] ").strip()
+                line = _read_sun_prompt()
             except (EOFError, KeyboardInterrupt):
                 console.print("\nbye")
                 raise typer.Exit(0) from None
             if not line:
                 continue
-            if _repl_handle_line(loop, line):
+            # Meta-commands only when the whole turn is a single-line command.
+            if "\n" not in line and _repl_handle_line(loop, line):
                 continue
             try:
                 loop.run(line, session=True)
@@ -840,6 +885,7 @@ def main() -> None:
     argument isn't a known subcommand, inject `run` before it. This is more
     robust across install methods than hacking click's command resolution.
     """
+    _configure_stdio()
     argv = sys.argv[1:]
     if argv:
         first = argv[0]

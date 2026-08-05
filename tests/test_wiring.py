@@ -74,6 +74,22 @@ def test_safety_flags_any_file_delete():
     assert assess_command("echo hello") is None
 
 
+def test_safety_allows_agent_tmp_helper_cleanup():
+    """Single-file `_tmp_*` cleanup must not block non-interactive runs."""
+    assert assess_command(r"del /q D:\proj\_tmp_mall_shop_links.php") is None
+    assert assess_command(r"rm -f /tmp/_tmp_helper.php") is None
+    assert (
+        assess_command(
+            r'python -c "from pathlib import Path; Path(r\'D:\\a\\_tmp_x.php\').unlink()"'
+        )
+        is None
+    )
+    # Still block broad / recursive deletes.
+    assert assess_command(r"del /s /q D:\proj\_tmp_dir") is not None
+    assert assess_command(r"rm -rf /tmp/_tmp_helper.php") is not None
+    assert assess_command(r"rm tmp.txt") is not None
+
+
 def test_safety_allows_stderr_to_devnull():
     # Regression: `2>/dev/null` and `/dev/null` sinks must NOT be flagged.
     assert assess_command("find . -type f 2>/dev/null | wc -l") is None

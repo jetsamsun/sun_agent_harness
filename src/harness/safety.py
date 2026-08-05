@@ -46,9 +46,32 @@ _DANGEROUS_PATTERNS: list[tuple[str, str]] = [
 
 _COMPILED = [(re.compile(p), reason) for p, reason in _DANGEROUS_PATTERNS]
 
+# Narrow allowlist: agent-created helpers like `_tmp_mall_shop_links.php`.
+_TMP_HELPER = re.compile(r"(?:[\\/]|^|['\"\s])_tmp_[A-Za-z0-9_.-]+\b", re.I)
+_TMP_DELETE_VERB = re.compile(
+    r"(?i)\b(?:del|rm|Remove-Item|os\.(?:remove|unlink))\b|\.unlink\s*\("
+)
+# Reject recursive / tree deletes even when the path contains `_tmp_*`.
+_TMP_DELETE_BROAD = re.compile(
+    r"(?i)(?:/\s*s\b|-Recurse\b|--recursive\b|\brm\s+-[a-zA-Z]*r)"
+)
+
+
+def _is_safe_tmp_helper_delete(command: str) -> bool:
+    """Allow single-file cleanup of `_tmp_*` helpers without confirmation."""
+    if not _TMP_HELPER.search(command):
+        return False
+    if not _TMP_DELETE_VERB.search(command):
+        return False
+    if _TMP_DELETE_BROAD.search(command):
+        return False
+    return True
+
 
 def assess_command(command: str) -> str | None:
     """Return a human-readable reason if the command looks dangerous, else None."""
+    if _is_safe_tmp_helper_delete(command):
+        return None
     for pattern, reason in _COMPILED:
         if pattern.search(command):
             return reason

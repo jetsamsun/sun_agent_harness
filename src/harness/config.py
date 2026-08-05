@@ -115,6 +115,19 @@ class Settings(BaseSettings):
     workspace_root: str = ""
     """Directory file writes must stay inside. Empty = process cwd at startup."""
 
+    persona_path: str = ""
+    """Path to PERSONA.md. Empty = {cwd}/.sun/PERSONA.md if present, else ~/.config/sun/PERSONA.md."""
+
+    # --- Session persistence (Redis; optional) ---
+    redis_url: str = ""
+    """Redis URL for chat-session memory (clearable via prune). Empty = no session persist."""
+
+    redis_prefix: str = "sun"
+    """Key prefix for session keys in Redis."""
+
+    sqlite_path: str = ""
+    """SQLite path for durable memory (persona/rules/background). Empty = ~/.config/sun/long_memory.db."""
+
     # --- Observability (Stage 2⑥) ---
     streaming: bool = True
     """Stream assistant text deltas to the CLI while the model thinks."""

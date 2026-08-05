@@ -57,11 +57,26 @@ def default_trace_path() -> Path:
     return Path(".sun") / "traces" / f"{stamp}.jsonl"
 
 
-def extract_usage(response_or_chunk: Any) -> tuple[int, int]:
-    """Read (prompt, completion) tokens from an OpenAI response/chunk if present."""
+def extract_usage(response_or_chunk: Any) -> tuple[int, int, int, int]:
+    """Read prompt/completion + DeepSeek cache hit/miss from usage if present.
+
+    Returns (prompt, completion, cache_hit, cache_miss).
+    """
     usage = getattr(response_or_chunk, "usage", None)
     if usage is None:
-        return 0, 0
+        return 0, 0, 0, 0
     prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
     completion = int(getattr(usage, "completion_tokens", 0) or 0)
-    return prompt, completion
+    hit = getattr(usage, "prompt_cache_hit_tokens", None)
+    miss = getattr(usage, "prompt_cache_miss_tokens", None)
+    if hit is None:
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is not None:
+            hit = getattr(details, "cached_tokens", None)
+    hit_i = int(hit or 0)
+    miss_i = int(miss or 0)
+    if prompt and hit_i == 0 and miss_i == 0:
+        miss_i = prompt
+    elif hit_i + miss_i < prompt:
+        miss_i = max(miss_i, prompt - hit_i)
+    return prompt, completion, hit_i, miss_i

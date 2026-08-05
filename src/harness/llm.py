@@ -57,6 +57,8 @@ class ChatResult:
     message: Any
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
     latency_ms: float = 0.0
     streamed: bool = False
 
@@ -202,11 +204,13 @@ class LLMClient:
 
     def _chat_once(self, kwargs: dict[str, Any], started: float) -> ChatResult:
         response = self._client.chat.completions.create(**kwargs)
-        prompt, completion = extract_usage(response)
+        prompt, completion, hit, miss = extract_usage(response)
         return ChatResult(
             message=response.choices[0].message,
             prompt_tokens=prompt,
             completion_tokens=completion,
+            cache_hit_tokens=hit,
+            cache_miss_tokens=miss,
             latency_ms=(time.perf_counter() - started) * 1000,
             streamed=False,
         )
@@ -230,11 +234,11 @@ class LLMClient:
             stream = self._client.chat.completions.create(**stream_kwargs)
 
         assembler = _StreamAssembler()
-        prompt = completion = 0
+        prompt = completion = hit = miss = 0
         for chunk in stream:
-            p, c = extract_usage(chunk)
-            if p or c:
-                prompt, completion = p, c
+            p, c, h, m = extract_usage(chunk)
+            if p or c or h or m:
+                prompt, completion, hit, miss = p, c, h, m
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -246,6 +250,8 @@ class LLMClient:
             message=assembler.to_message(),
             prompt_tokens=prompt,
             completion_tokens=completion,
+            cache_hit_tokens=hit,
+            cache_miss_tokens=miss,
             latency_ms=(time.perf_counter() - started) * 1000,
             streamed=True,
         )

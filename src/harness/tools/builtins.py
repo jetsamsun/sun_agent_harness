@@ -10,13 +10,30 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterator
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 from .. import gitops
 from ..workspace import resolve_in_workspace, unified_diff
 from .registry import ToolRegistry
+
+_FETCH_TIMEOUT_S = 30
+_FETCH_MAX_BYTES = 2_000_000
+_FETCH_USER_AGENT = "sun-harness/0.1 (+https://github.com/jetsamsun/sun_agent_harness)"
+_FETCH_CACHE_TTL_S = 15 * 60
+_FETCH_CACHE_MAX_ENTRIES = 64
+# key -> (expires_at, result_without_cached_flag, stored_max_chars)
+_FETCH_CACHE: dict[str, tuple[float, dict[str, Any], int]] = {}
+_HTML_SKIP_TAGS = frozenset({"script", "style", "noscript", "svg", "template"})
+_BLOCK_BREAK_TAGS = frozenset(
+    {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article"}
+)
 
 # A single shared registry for the built-in tool set.
 registry = ToolRegistry()
@@ -367,6 +384,371 @@ def list_dir(path: str = ".") -> dict:
     return {"success": True, "path": str(p.resolve()), "entries": entries}
 
 
+class _HtmlTextExtractor(HTMLParser):
+    """Minimal HTML → plain text (stdlib only; no JS execution)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skip_depth = 0
+        self._in_title = False
+        self._chunks: list[str] = []
+        self.title_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        t = tag.lower()
+        if t in _HTML_SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if t == "title":
+            self._in_title = True
+        elif t in _BLOCK_BREAK_TAGS:
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        t = tag.lower()
+        if t in _HTML_SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if t == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        if self._in_title:
+            self.title_parts.append(data)
+            return
+        text = data.strip()
+        if text:
+            self._chunks.append(text + " ")
+
+
+def _html_to_text(raw: str) -> tuple[str, str]:
+    parser = _HtmlTextExtractor()
+    try:
+        parser.feed(raw)
+        parser.close()
+    except Exception:
+        pass
+    title = re.sub(r"\s+", " ", "".join(parser.title_parts)).strip()
+    body = re.sub(r"[ \t]+", " ", "".join(parser._chunks))
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return title, body
+
+
+def _decode_http_body(raw: bytes, content_type: str) -> str:
+    charset = "utf-8"
+    m = re.search(r"charset=([\w-]+)", content_type, re.I)
+    if m:
+        charset = m.group(1).strip("'\"")
+    try:
+        return raw.decode(charset, errors="replace")
+    except LookupError:
+        return raw.decode("utf-8", errors="replace")
+
+
+def _normalize_url(url: str) -> str:
+    """Canonicalize URL for cache keys (drop fragment; normalize host/path)."""
+    p = urlparse(url.strip())
+    host = p.netloc.lower()
+    path = p.path or "/"
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+    query = f"?{p.query}" if p.query else ""
+    return f"{p.scheme.lower()}://{host}{path}{query}"
+
+
+def _clamp_max_chars(max_chars: object) -> int:
+    try:
+        n = int(max_chars)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        n = 12000
+    return max(500, min(n, 100_000))
+
+
+def clear_fetch_cache() -> None:
+    """Clear in-process fetch_url cache (tests / explicit reset)."""
+    _FETCH_CACHE.clear()
+
+
+def _fetch_cache_get(cache_key: str, max_chars: int) -> dict[str, Any] | None:
+    entry = _FETCH_CACHE.get(cache_key)
+    if entry is None:
+        return None
+    expires_at, payload, stored_max = entry
+    if time.monotonic() >= expires_at:
+        _FETCH_CACHE.pop(cache_key, None)
+        return None
+    # Need a larger window than what we stored and prior response was truncated.
+    if max_chars > stored_max and payload.get("truncated"):
+        return None
+    out = dict(payload)
+    text = str(out.get("text", ""))
+    if len(text) > max_chars:
+        text = text[:max_chars]
+        out["text"] = text
+        out["truncated"] = True
+    out["chars"] = len(text)
+    out["cached"] = True
+    return out
+
+
+def _fetch_cache_put(cache_key: str, result: dict[str, Any], max_chars: int) -> None:
+    if not result.get("success"):
+        return
+    # Evict expired / oldest when full.
+    now = time.monotonic()
+    expired = [k for k, (exp, _, _) in _FETCH_CACHE.items() if now >= exp]
+    for k in expired:
+        _FETCH_CACHE.pop(k, None)
+    while len(_FETCH_CACHE) >= _FETCH_CACHE_MAX_ENTRIES:
+        oldest_key = min(_FETCH_CACHE, key=lambda k: _FETCH_CACHE[k][0])
+        _FETCH_CACHE.pop(oldest_key, None)
+    stored = {k: v for k, v in result.items() if k != "cached"}
+    _FETCH_CACHE[cache_key] = (now + _FETCH_CACHE_TTL_S, stored, max_chars)
+
+
+def _http_get(url: str, *, accept: str) -> tuple[int, str, str, bytes]:
+    """GET url; returns (status, final_url, content_type, raw_bytes)."""
+    req = Request(
+        url,
+        headers={
+            "User-Agent": _FETCH_USER_AGENT,
+            "Accept": accept,
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        },
+        method="GET",
+    )
+    with urlopen(req, timeout=_FETCH_TIMEOUT_S) as resp:  # noqa: S310 — caller checks scheme
+        status = getattr(resp, "status", None) or resp.getcode()
+        final_url = resp.geturl()
+        content_type = resp.headers.get("Content-Type", "") or ""
+        raw = resp.read(_FETCH_MAX_BYTES + 1)
+    return int(status) if status is not None else 0, final_url, content_type, raw
+
+
+@registry.tool()
+def fetch_url(url: str, max_chars: int = 12000) -> dict:
+    """Fetch a web page over HTTP(S) and return readable text for analysis.
+
+    Prefer this over run_shell+curl for reading websites. Does not execute
+    JavaScript — SPA / heavily client-rendered pages may return incomplete text.
+    Successful responses are reused in-process for ~15 minutes (same URL).
+
+    :param url: http or https URL.
+    :param max_chars: Max characters of extracted text to return (default 12000).
+    """
+    raw_url = url.strip()
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return {
+            "success": False,
+            "error": "Only http/https URLs with a host are allowed",
+        }
+
+    max_chars_i = _clamp_max_chars(max_chars)
+    cache_key = _normalize_url(raw_url)
+    cached = _fetch_cache_get(cache_key, max_chars_i)
+    if cached is not None:
+        return cached
+
+    try:
+        status, final_url, content_type, raw = _http_get(
+            raw_url,
+            accept=(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "text/plain,application/json;q=0.8,*/*;q=0.5"
+            ),
+        )
+    except HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read(4000).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "error": f"HTTP {exc.code}: {exc.reason}",
+            "status": exc.code,
+            "url": raw_url,
+            "body_preview": body[:500],
+            "cached": False,
+        }
+    except URLError as exc:
+        return {
+            "success": False,
+            "error": f"Network error: {exc.reason}",
+            "url": raw_url,
+            "cached": False,
+        }
+    except TimeoutError:
+        return {
+            "success": False,
+            "error": f"Timed out after {_FETCH_TIMEOUT_S}s",
+            "url": raw_url,
+            "cached": False,
+        }
+    except OSError as exc:
+        return {"success": False, "error": str(exc), "url": raw_url, "cached": False}
+
+    truncated_bytes = len(raw) > _FETCH_MAX_BYTES
+    if truncated_bytes:
+        raw = raw[:_FETCH_MAX_BYTES]
+
+    text = _decode_http_body(raw, content_type)
+    ctype_l = content_type.lower()
+    title = ""
+    if "html" in ctype_l or text.lstrip()[:1] == "<":
+        title, text = _html_to_text(text)
+
+    truncated = truncated_bytes or len(text) > max_chars_i
+    if len(text) > max_chars_i:
+        text = text[:max_chars_i]
+
+    result = {
+        "success": True,
+        "url": raw_url,
+        "final_url": final_url,
+        "status": status,
+        "content_type": content_type,
+        "title": title,
+        "text": text,
+        "chars": len(text),
+        "truncated": truncated,
+        "cached": False,
+    }
+    _fetch_cache_put(cache_key, result, max_chars_i)
+    # Also key by final_url after redirects so follow-ups hit cache.
+    final_key = _normalize_url(final_url)
+    if final_key != cache_key:
+        _fetch_cache_put(final_key, result, max_chars_i)
+    return result
+
+
+def _unwrap_ddg_href(href: str) -> str:
+    """Expand DuckDuckGo redirect links to the real target URL."""
+    h = href.strip()
+    if h.startswith("//"):
+        h = "https:" + h
+    p = urlparse(h)
+    if "duckduckgo.com" in p.netloc and (p.path.startswith("/l/") or "/l/?" in h):
+        qs = parse_qs(p.query)
+        if "uddg" in qs and qs["uddg"]:
+            return unquote(qs["uddg"][0])
+    return h
+
+
+class _DdgResultsParser(HTMLParser):
+    """Extract title/url/snippet from DuckDuckGo HTML results page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self._in_result_a = False
+        self._in_snippet = False
+        self._title_parts: list[str] = []
+        self._snippet_parts: list[str] = []
+        self._href = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        ad = {k: (v or "") for k, v in attrs}
+        classes = set(ad.get("class", "").split())
+        if tag == "a" and "result__a" in classes:
+            self._in_result_a = True
+            self._title_parts = []
+            self._href = ad.get("href", "")
+        elif tag in {"a", "td", "div"} and "result__snippet" in classes:
+            self._in_snippet = True
+            self._snippet_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._in_result_a:
+            self._in_result_a = False
+            url = _unwrap_ddg_href(self._href)
+            title = re.sub(r"\s+", " ", "".join(self._title_parts)).strip()
+            if url.startswith("http") and title:
+                self.results.append({"title": title, "url": url, "snippet": ""})
+        elif self._in_snippet and tag in {"a", "td", "div"}:
+            self._in_snippet = False
+            snippet = re.sub(r"\s+", " ", "".join(self._snippet_parts)).strip()
+            if self.results and not self.results[-1].get("snippet"):
+                self.results[-1]["snippet"] = snippet[:300]
+
+    def handle_data(self, data: str) -> None:
+        if self._in_result_a:
+            self._title_parts.append(data)
+        elif self._in_snippet:
+            self._snippet_parts.append(data)
+
+
+@registry.tool()
+def search_web(query: str, max_results: int = 5) -> dict:
+    """Search the public web for relevant URLs (DuckDuckGo HTML).
+
+    Use when you do not already know the exact documentation URL. Then call
+    fetch_url on the single best result — do not guess multiple path variants.
+
+    :param query: Search query (include product/site keywords when useful).
+    :param max_results: How many results to return (1–10, default 5).
+    """
+    q = (query or "").strip()
+    if not q:
+        return {"success": False, "error": "query must be non-empty"}
+
+    try:
+        n = int(max_results)
+    except (TypeError, ValueError):
+        n = 5
+    n = max(1, min(n, 10))
+
+    search_url = "https://html.duckduckgo.com/html/?" + urlencode({"q": q})
+    try:
+        status, final_url, content_type, raw = _http_get(
+            search_url,
+            accept="text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        )
+    except HTTPError as exc:
+        return {"success": False, "error": f"HTTP {exc.code}: {exc.reason}", "query": q}
+    except URLError as exc:
+        return {"success": False, "error": f"Network error: {exc.reason}", "query": q}
+    except TimeoutError:
+        return {"success": False, "error": f"Timed out after {_FETCH_TIMEOUT_S}s", "query": q}
+    except OSError as exc:
+        return {"success": False, "error": str(exc), "query": q}
+
+    if status >= 400:
+        return {"success": False, "error": f"HTTP {status}", "query": q, "status": status}
+
+    html = _decode_http_body(raw[:_FETCH_MAX_BYTES], content_type)
+    parser = _DdgResultsParser()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        pass
+
+    # Deduplicate by normalized URL while preserving order.
+    seen: set[str] = set()
+    results: list[dict[str, str]] = []
+    for item in parser.results:
+        key = _normalize_url(item["url"])
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(item)
+        if len(results) >= n:
+            break
+
+    return {
+        "success": True,
+        "query": q,
+        "count": len(results),
+        "results": results,
+        "search_url": final_url,
+        "note": "Pick one best URL and fetch_url it; avoid guessing multiple paths.",
+    }
+
+
 @registry.tool()
 def check_syntax(path: str) -> dict:
     """Check that a source file parses without running it.
@@ -663,6 +1045,24 @@ def reset_planning_state() -> None:
     _TODOS = []
     _PLAN = None
     gitops.reset_git_state()
+
+
+def export_planning_state() -> dict[str, Any]:
+    """Snapshot todos/plan for session persistence."""
+    return {"todos": list(_TODOS), "plan": _PLAN}
+
+
+def import_planning_state(data: dict[str, Any] | None) -> None:
+    """Restore todos/plan from a persisted session (does not touch git state)."""
+    global _TODOS, _PLAN
+    if not data:
+        _TODOS = []
+        _PLAN = None
+        return
+    todos = data.get("todos")
+    _TODOS = list(todos) if isinstance(todos, list) else []
+    plan = data.get("plan")
+    _PLAN = plan if isinstance(plan, dict) else None
 
 
 def _run_capture(command: str, timeout: int) -> dict:

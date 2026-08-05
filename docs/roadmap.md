@@ -21,9 +21,10 @@
 | **需求补充** | 含糊需求先问清再动手 | Stage 2⑤ | ✅ `ask_user` |
 | **任务拆分** | 计划 + todo，按步执行 | Stage 2⑤ | ✅ `propose_plan` + `todo_write` |
 | **长任务** | 批准、断点、预算、插话 | Stage 2⑤ | ✅ 批准/插话/max_turns；断点与后台 shell 仍待做 |
-| **会话/项目记忆** | 跨轮不忘；跨天/跨进程可续 | Stage 2④ → Stage 3③ | ✅ REPL 内存会话；持久化见 3③ |
+| **会话/项目记忆** | 跨轮不忘；跨天/跨进程可续 | Stage 2④ → Stage 3③ | ✅ Redis 聊天（可 prune）+ SQLite 长久记忆（人设/规则/背景） |
 | **多模型分责** | 规划/编码/审查等用不同模型 | Stage 2.5 薄路由 → Stage 3①② | 单 model |
 | **外接工具** | MCP / 插件 | Stage 3④ | 无（ZCode 侧可另用） |
+| **图片视觉理解** | 读本地/URL 图片并描述、答问（多模态） | Stage 3⑤ | ⬜ 未做 |
 
 学习二阶段（吃透 Stage 1 内核）完成前，**产品大项不抢跑**。
 
@@ -40,6 +41,7 @@
 | **不同模型执行不同任务** | ✅ 有但偏后 | **2.5 薄路由 + 3①②** | 2.5 先做「按阶段换模型」；完整多 agent 放 3 |
 | 测试验证闭环 | ✅ 有 | 2② + 2⑤ 验收句 | 与计划模式绑死 |
 | 外接工具 MCP | ✅ 有 | 3④ | 可选 |
+| **图片视觉理解** | ✅ 已入计划 | **3⑤** | 多模态模型 + `read_image`/`analyze_image`；非编码主闭环，Stage 2 后做 |
 
 ---
 
@@ -105,7 +107,9 @@ streaming · context compression (in-memory only for now).
 - [x] 限制只在 `workspace_root`（默认 cwd）内 write/edit，防路径逃逸
 
 ### ④ 记忆与上下文（改大项目不爆窗口；记忆管理的第一层）
-- [x] **REPL 会话记忆（内存）**：`session=True` 跨 `sun>` 复用 Context；`clear` / `tokens` / `exit`
+- [x] **REPL 会话记忆（内存）**：`session=True` 跨 `sun>` 复用 Context；`/new` · `tokens` · `exit`
+- [x] **Redis 聊天记忆（可清）**：`SUN_REDIS_URL`；`/resume` `/sessions`；工作态+transcript；绑 cwd；`prune` 随时清；连不上硬失败
+- [x] **SQLite 长久记忆（稳固）**：`~/.config/sun/long_memory.db`（`SUN_SQLITE_PATH`）；人格/规则/背景/提示补充；**不会被 sessions prune 清除**；删除需 `sun memory delete` 确认
 - [x] 上下文压缩：超 `context_max_tokens`（默认 90 万，硬顶 1M）时折叠旧轮为摘要 + 保留近尾
 - [x] 大输出裁剪：tool result 进 Context 前 head+tail 软截断（默认 12k 字符）
 - [ ] 相关文件召回：按任务只把相关文件读进上下文，不全塞（延后）
@@ -177,9 +181,10 @@ streaming · context compression (in-memory only for now).
 - [ ] 子任务完成后主 agent 做集成验证（再跑总测）
 
 ### ③ 记忆管理（分层，避免全塞进 Context）
-- [ ] **会话持久化（SQLite）** + 跨进程恢复（关掉终端还能续）
-- [ ] **项目记忆**：仓库级笔记 / 约定 / 已做决策（如 `MEMORY.md` 或 DB），新会话可加载
-- [ ] **情景摘要**：长会话周期性写入摘要，细节可回查
+- [x] **双存储**：Redis = 聊天会话（可 prune）；SQLite = 人设/规则/背景等长久记忆（删需确认）
+- [x] **会话持久化（Redis）** + 跨进程 `/resume`（需 `SUN_REDIS_URL`；见 Stage 2④）
+- [x] **长久记忆（SQLite）** + `sun memory` / `/memory`（见 Stage 2④）
+- [ ] **深续**：从 transcript 按需抽最近 K 轮进 Context
 - [ ] 记忆读写工具：agent 可主动 `remember` / `recall`，而非只靠隐性 Context
 - [ ]（可选）代码库语义检索（embedding / 简易索引）增强「相关文件召回」
 
@@ -188,8 +193,18 @@ streaming · context compression (in-memory only for now).
 - [ ] Sandbox hardening（Docker / Firecracker）
 - [ ] 多工作区 / monorepo 根目录绑定
 
+### ⑤ 图片视觉理解（多模态）
+终端里看图、读截图/设计稿/报错图，再结合文字任务回答或改代码。
+- [ ] 配置：多模态 endpoint / model（可与主编码模型分离，如 `SUN_VISION_MODEL`）
+- [ ] 工具：`analyze_image`（本地路径优先；可选 http(s) URL）→ 返回描述/OCR 要点/对用户问题的回答
+- [ ] 消息形态：把图片以 API 要求的 image 内容块交给视觉模型（不整图永久塞进主 Context；摘要进会话）
+- [ ] 安全：仅 workspace 内路径；体积/分辨率上限；无视觉模型时明确报错
+- [ ] REPL 体验：用户可贴路径或「看这张图：…」由 agent 调工具
+
 ### Stage 3 验收（多模型主闭环 DoD）
 > 模糊需求 → 澄清 → 拆步 → **planner 模型出计划** → **coder 模型改代码** → 跑测自修 → **reviewer 模型看一眼** → 项目记忆留下约定 → finish。
+
+视觉能力另验：给一张 UI/报错截图路径 → `analyze_image` → 结合结论改代码或回答问题。
 
 ### 刻意靠后（有需要再开）
 - Web/browser 自动化 · GUI · 云端多租户

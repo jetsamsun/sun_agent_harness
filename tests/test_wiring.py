@@ -33,6 +33,8 @@ def test_all_builtin_tools_registered():
         "search_files",
         "find_files",
         "list_dir",
+        "fetch_url",
+        "search_web",
         "check_syntax",
         "run_tests",
         "run_lint",
@@ -58,6 +60,18 @@ def test_safety_flags_rm_rf():
     assert assess_command("rm -rf /tmp/foo") is not None
     assert assess_command("sudo apt install x") is not None
     assert assess_command("ls -la") is None
+
+
+def test_safety_flags_any_file_delete():
+    """Every common delete path must require confirmation."""
+    assert assess_command("rm tmp.txt") is not None
+    assert assess_command("del /q weather.txt") is not None
+    assert assess_command("Remove-Item -Force tmp.py") is not None
+    assert assess_command("rd /s /q build") is not None
+    assert assess_command("git rm old.py") is not None
+    assert assess_command('python -c "import os; os.remove(r\'x.txt\')"') is not None
+    assert assess_command('python -c "from pathlib import Path; Path(\'x\').unlink()"') is not None
+    assert assess_command("echo hello") is None
 
 
 def test_safety_allows_stderr_to_devnull():
@@ -664,17 +678,63 @@ def test_stream_assembler_builds_tool_calls():
     assert msg.tool_calls[0].function.arguments == '{"summary":"ok"}'
 
 
-def test_usage_totals_and_cost():
-    from harness.usage import UsageTotals
+def test_usage_totals_and_cost_deepseek_cny_with_cache():
+    """DeepSeek flash: hit 0.02 / miss 1 / out 2 元 per 1M (off-peak)."""
+    from datetime import datetime, timedelta, timezone
 
-    u = UsageTotals(model="gpt-4o-mini")
-    u.add_llm(turn=1, prompt_tokens=1_000_000, completion_tokens=0, latency_ms=10)
-    u.add_tool(latency_ms=5)
-    assert u.total_tokens == 1_000_000
-    cost = u.estimate_cost_usd()
+    from harness.usage import UsageTotals, peak_multiplier
+
+    beijing = timezone(timedelta(hours=8))
+    # Force off-peak for a stable number (01:00 Beijing).
+    off_peak = datetime(2026, 8, 4, 1, 0, tzinfo=beijing)
+    assert peak_multiplier(off_peak) == 1.0
+
+    u = UsageTotals(model="deepseek-v4-flash")
+    u.add_llm(
+        turn=1,
+        prompt_tokens=1_000_000,
+        completion_tokens=1_000_000,
+        latency_ms=10,
+        cache_hit_tokens=800_000,
+        cache_miss_tokens=200_000,
+        when=off_peak,
+    )
+    # 0.8M*0.02 + 0.2M*1 + 1M*2 = 0.016 + 0.2 + 2 = 2.216 元
+    cost = u.estimate_cost_cny()
     assert cost is not None
-    assert abs(cost - 0.15) < 1e-9
-    assert "tokens" in u.summary_line()
+    assert abs(cost - 2.216) < 1e-9
+    assert abs(u.cache_hit_rate() - 0.8) < 1e-9
+    assert "¥" in u.summary_line()
+
+    peak = datetime(2026, 8, 4, 10, 0, tzinfo=beijing)
+    assert peak_multiplier(peak) == 2.0
+    u2 = UsageTotals(model="deepseek-v4-flash")
+    u2.add_llm(
+        turn=1,
+        prompt_tokens=1_000_000,
+        completion_tokens=0,
+        latency_ms=1,
+        cache_hit_tokens=0,
+        cache_miss_tokens=1_000_000,
+        when=peak,
+    )
+    assert abs(u2.estimate_cost_cny() - 2.0) < 1e-9  # 1元 * 2× peak
+
+
+def test_extract_usage_reads_deepseek_cache_fields():
+    from harness.trace import extract_usage
+
+    class _U:
+        prompt_tokens = 100
+        completion_tokens = 10
+        prompt_cache_hit_tokens = 80
+        prompt_cache_miss_tokens = 20
+
+    class _Resp:
+        usage = _U()
+
+    p, c, h, m = extract_usage(_Resp())
+    assert (p, c, h, m) == (100, 10, 80, 20)
 
 
 def test_trace_sink_writes_jsonl(tmp_path):
@@ -753,25 +813,39 @@ def test_run_shell_decodes_utf8_not_locale():
     assert "天气" in result["stdout"]
 
 
-def test_build_system_prompt_includes_detected_os():
+def test_build_system_prompt_includes_detected_os(tmp_path):
     from harness.loop import build_system_prompt, detect_runtime_env
 
+    persona = tmp_path / "PERSONA.md"
+    persona.write_text("# test persona\n", encoding="utf-8")
+    db = tmp_path / "long_memory.db"
     env = detect_runtime_env()
-    prompt = build_system_prompt(env)
+    prompt = build_system_prompt(
+        env, persona_path=str(persona), sqlite_path=str(db)
+    )
     assert "当前运行环境" in prompt
     assert env["family"] in prompt
     assert "Linux shell" not in prompt
     assert "你是 Sun" in prompt
+    assert "test persona" in prompt
 
 
-def test_loop_emits_usage_event(monkeypatch):
+def test_loop_emits_usage_event(monkeypatch, tmp_path):
     from harness.config import Settings
     from harness.llm import LLMClient
     from harness.loop import AgentLoop, Event
 
+    persona = tmp_path / "PERSONA.md"
+    persona.write_text("# p\n", encoding="utf-8")
+    db = tmp_path / "long_memory.db"
     _, _TC, _Msg = _fake_msg_classes()
     settings = Settings(
-        api_key="x", max_turns=2, require_confirmation=False, streaming=False
+        api_key="x",
+        max_turns=2,
+        require_confirmation=False,
+        streaming=False,
+        persona_path=str(persona),
+        sqlite_path=str(db),
     )
     ex = ToolExecutor(registry, settings)
     client = LLMClient(settings)

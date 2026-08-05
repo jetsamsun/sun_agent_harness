@@ -131,6 +131,19 @@ class Context:
         except Exception:  # noqa: BLE001
             self._enc = None
 
+    @classmethod
+    def from_messages(
+        cls,
+        messages: list[dict[str, Any]],
+        *,
+        tool_result_chars: int = DEFAULT_TOOL_RESULT_CHARS,
+    ) -> Context:
+        """Restore a Context from persisted message dicts."""
+        ctx = cls("", tool_result_chars=tool_result_chars)
+        if messages:
+            ctx._messages = [dict(m) for m in messages]
+        return ctx
+
     def add_user(self, content: str) -> None:
         self._messages.append({"role": "user", "content": content})
 
@@ -162,6 +175,13 @@ class Context:
 
     def messages(self) -> list[dict[str, Any]]:
         return self._messages
+
+    def set_system_prompt(self, content: str) -> None:
+        """Replace the leading system message (used to reload persona mid-REPL)."""
+        if self._messages and self._messages[0].get("role") == "system":
+            self._messages[0]["content"] = content
+        else:
+            self._messages.insert(0, {"role": "system", "content": content})
 
     def user_turns(self) -> int:
         return sum(1 for m in self._messages if m.get("role") == "user")

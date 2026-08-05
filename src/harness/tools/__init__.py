@@ -5,6 +5,8 @@ built-in tools registered.
 from __future__ import annotations
 
 from .builtins import (
+    export_planning_state,
+    import_planning_state,
     registry,
     reset_planning_state,
     set_ask_fn,
@@ -24,6 +26,8 @@ __all__ = [
     "set_edit_confirm_fn",
     "set_confirm_edits",
     "reset_planning_state",
+    "export_planning_state",
+    "import_planning_state",
     "ToolExecutor",
     "Tool",
     "ToolRegistry",

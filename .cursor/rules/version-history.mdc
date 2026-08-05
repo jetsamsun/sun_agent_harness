@@ -1,0 +1,15 @@
+---
+description: 用户要求「生成版本」时更新 VERSIONS.md 与版本号
+alwaysApply: true
+---
+
+# 版本记录约定
+
+当用户说「生成版本 / 记一版 / bump version」等时：
+
+1. 自定义下一版本号（语义化，如 `0.2.1` / `0.3.0`），写入：
+   - `VERSIONS.md`（**最新在上**，含日期与简洁变更要点）
+   - `pyproject.toml` 的 `version`
+   - `src/harness/__init__.py` 的 `__version__`
+2. 变更内容只写用户能感知的要点，每条一行，尽量短。
+3. 未要求「生成版本」时不要擅自改版本号。

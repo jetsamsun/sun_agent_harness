@@ -11,8 +11,22 @@ from __future__ import annotations
 import re
 
 # Patterns that should trigger a confirmation prompt before running.
+# Any file/directory delete path must be listed here — silent deletes are not OK.
 _DANGEROUS_PATTERNS: list[tuple[str, str]] = [
-    (r"\brm\s+(-[a-zA-Z]*\s+)*-?[a-zA-Z]*[rf]", "recursive/forced delete (rm -rf)"),
+    # --- deletes (always confirm) ---
+    (r"\brm\b", "delete files (rm)"),
+    (r"\bunlink\b", "delete file (unlink)"),
+    (r"\brmdir\b", "delete directory (rmdir)"),
+    (r"(?i)\bdel\b", "delete files (del)"),
+    (r"(?i)\berase\b", "delete files (erase)"),
+    (r"(?i)\brd\b", "delete directory (rd)"),
+    (r"(?i)\bRemove-Item\b", "delete files (Remove-Item)"),
+    (r"\bgit\s+rm\b", "delete files (git rm)"),
+    (r"\bos\.(remove|unlink)\b", "delete file (os.remove/unlink)"),
+    (r"\bshutil\.rmtree\b", "delete tree (shutil.rmtree)"),
+    (r"\.unlink\s*\(", "delete file (Path.unlink)"),
+    (r"\bPath\s*\([^)]*\)\s*\.unlink\b", "delete file (Path.unlink)"),
+    # --- other destructive ops ---
     (r"\bmkfs\b", "filesystem format (mkfs)"),
     (r"\bdd\b\s+.*of=", "raw disk write (dd)"),
     # Write-redirect (> or >>) into a system path. We deliberately do NOT match

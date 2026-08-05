@@ -4,6 +4,9 @@ Commands:
     sun "task"            run a task (shorthand for `sun run`)
     sun run "task"        run a task; omit task for interactive REPL
     sun model             configure the LLM (api key / base url / model)
+    sun persona           show / edit PERSONA.md (seeds SQLite once)
+    sun memory            SQLite 长久记忆（人格/规则/背景；删除需确认）
+    sun sessions          list / prune Redis 聊天会话（可随时清）
     sun config            show current effective configuration
     sun update            reinstall the latest version from GitHub
     sun remove            uninstall sun
@@ -30,7 +33,15 @@ from .config import global_config_path, load_settings
 from .config_writer import read_config, write_config
 from .gitops import set_auto_git_checkpoint
 from .llm import LLMClient
+from .long_memory import KINDS, LongMemoryError, open_long_memory
 from .loop import AgentLoop, Event
+from .persona import (
+    ensure_persona_file,
+    load_persona_text,
+    open_persona_in_editor,
+    resolve_persona_path,
+)
+from .session_store import SessionStore, SessionStoreError
 from .tools import (
     ToolExecutor,
     registry,
@@ -140,6 +151,20 @@ def _make_event_printer(*, show_usage: bool = True):
         elif event.kind == "usage" and show_usage:
             # finish/stop already printed; skip duplicate unless orphaned
             pass
+        elif event.kind == "session":
+            action = event.data.get("action")
+            sid = event.data.get("id", "?")
+            if action == "new":
+                console.print(f"[dim]💾 session {sid} (redis)[/dim]")
+            elif action == "save":
+                console.print(
+                    f"[dim]💾 saved {sid} · turns={event.data.get('user_turns')} "
+                    f"· {event.data.get('status')}[/dim]"
+                )
+            elif action == "resume":
+                title = event.data.get("title") or ""
+                extra = f" · {title}" if title else ""
+                console.print(f"[dim]💾 resumed {sid}{extra}[/dim]")
 
     return printer
 
@@ -150,11 +175,14 @@ def _print_usage(usage: dict) -> None:
     totals = UsageTotals(
         prompt_tokens=int(usage.get("prompt_tokens") or 0),
         completion_tokens=int(usage.get("completion_tokens") or 0),
+        cache_hit_tokens=int(usage.get("cache_hit_tokens") or 0),
+        cache_miss_tokens=int(usage.get("cache_miss_tokens") or 0),
         llm_calls=int(usage.get("llm_calls") or 0),
         tool_calls=int(usage.get("tool_calls") or 0),
         llm_ms=float(usage.get("llm_ms") or 0),
         tool_ms=float(usage.get("tool_ms") or 0),
         model=str(usage.get("model") or ""),
+        cost_cny=float(usage.get("est_cost_cny") or 0),
     )
     wall = usage.get("wall_ms")
     extra = f" · wall {wall/1000:.1f}s" if wall is not None else ""
@@ -217,6 +245,18 @@ def _make_edit_confirm_fn():
     return confirm_edit
 
 
+def _connect_store(settings) -> SessionStore | None:
+    """Connect Redis when SUN_REDIS_URL is set; hard-fail if unreachable."""
+    url = (settings.redis_url or "").strip()
+    if not url:
+        return None
+    try:
+        return SessionStore.connect(url, prefix=settings.redis_prefix or "sun")
+    except SessionStoreError as exc:
+        console.print(f"[red]Redis required but unavailable:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
 def _build_loop() -> tuple[AgentLoop, TraceSink | None]:
     settings = load_settings()
     if not settings.api_key:
@@ -230,6 +270,7 @@ def _build_loop() -> tuple[AgentLoop, TraceSink | None]:
     set_ask_fn(_make_ask_fn())
     set_plan_confirm_fn(_make_plan_confirm_fn())
     set_edit_confirm_fn(_make_edit_confirm_fn())
+    store = _connect_store(settings)
     llm = LLMClient(settings)
     executor = ToolExecutor(registry, settings, confirm_fn=_make_confirm_fn())
     printer = _make_event_printer(show_usage=settings.show_usage)
@@ -241,12 +282,136 @@ def _build_loop() -> tuple[AgentLoop, TraceSink | None]:
         on_event = sink
     else:
         on_event = printer
-    return AgentLoop(llm, registry, executor, settings, on_event=on_event), sink
+    return (
+        AgentLoop(llm, registry, executor, settings, on_event=on_event, store=store),
+        sink,
+    )
 
 
 _REPL_EXIT = {"exit", "quit", "/exit", "/quit"}
-_REPL_CLEAR = {"clear", "/clear"}
+_REPL_CLEAR = {"clear", "/clear", "/new", "new"}
 _REPL_TOKENS = {"tokens", "/tokens"}
+
+
+def _print_sessions_table(rows: list) -> None:
+    if not rows:
+        console.print("[dim]No sessions for this cwd.[/dim]")
+        return
+    table = Table(title="Sessions (this cwd)", show_header=True)
+    table.add_column("id", style="cyan")
+    table.add_column("updated")
+    table.add_column("turns")
+    table.add_column("status")
+    table.add_column("title")
+    for m in rows:
+        table.add_row(
+            m.id,
+            (m.updated_at or "")[:19],
+            str(m.user_turns),
+            m.status,
+            m.title or "",
+        )
+    console.print(table)
+
+
+def _repl_handle_line(loop: AgentLoop, line: str) -> bool:
+    """Handle REPL meta-commands. Returns True if the line was consumed."""
+    raw = line.strip()
+    low = raw.lower()
+    parts = raw.split(maxsplit=1)
+    cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if low in _REPL_EXIT:
+        console.print("bye")
+        raise typer.Exit(0)
+
+    if low in _REPL_CLEAR:
+        loop.clear_session()
+        console.print("[dim]New session (in-memory cleared; next message starts fresh).[/dim]")
+        return True
+
+    if low in _REPL_TOKENS:
+        ctx = loop.session_context()
+        usage = loop.session_usage()
+        sid = loop.session_id()
+        sid_bit = f" · id {sid}" if sid else ""
+        if ctx is None:
+            console.print(f"[dim]No session yet (0 tokens){sid_bit}[/dim]")
+        else:
+            n = ctx.token_estimate()
+            turns = ctx.user_turns()
+            label = f"~{n} ctx tokens" if n >= 0 else "ctx tokens unknown"
+            console.print(
+                f"[dim]{label} · {turns} user turn(s) · "
+                f"api {usage.total_tokens} tok{sid_bit}[/dim]"
+            )
+        return True
+
+    if cmd in {"/sessions", "sessions"}:
+        try:
+            if arg.lower() == "prune":
+                if not sys.stdin.isatty() or not Confirm.ask(
+                    "Delete all Redis sessions for this cwd?", default=False
+                ):
+                    console.print("[dim]Cancelled.[/dim]")
+                    return True
+                deleted = loop.prune_sessions()
+                console.print(f"[green]Pruned {len(deleted)} session(s).[/green]")
+                return True
+            _print_sessions_table(loop.list_sessions())
+        except SessionStoreError as exc:
+            console.print(f"[red]{exc}[/red]")
+        return True
+
+    if cmd in {"/resume", "resume"}:
+        if not arg:
+            console.print("[yellow]Usage: /resume <session_id>[/yellow]")
+            return True
+        try:
+            sid = loop.resume_session(arg)
+            console.print(f"[green]Resumed[/green] {sid}")
+        except SessionStoreError as exc:
+            console.print(f"[red]{exc}[/red]")
+        return True
+
+    if cmd in {"/memory", "memory"}:
+        settings = load_settings()
+        mem = open_long_memory(settings.sqlite_path)
+        try:
+            if not arg or arg.lower() == "list":
+                _print_memory_table(mem.list())
+            else:
+                console.print(
+                    "[dim]REPL: /memory 列表。写入/删除请用[/dim] "
+                    "[bold]sun memory set|delete[/bold]"
+                )
+        finally:
+            mem.close()
+        return True
+
+    return False
+
+
+def _print_memory_table(rows: list) -> None:
+    if not rows:
+        console.print("[dim]长久记忆为空（SQLite）。用 sun memory set 添加。[/dim]")
+        return
+    table = Table(title="长久记忆 · SQLite（不会被 sessions prune 清除）", show_header=True)
+    table.add_column("id", style="cyan")
+    table.add_column("kind")
+    table.add_column("key")
+    table.add_column("title")
+    table.add_column("updated")
+    for e in rows:
+        table.add_row(
+            str(e.id),
+            e.kind,
+            e.key,
+            e.title or "",
+            (e.updated_at or "")[:19],
+        )
+    console.print(table)
 
 
 def _run_task(task: str | None) -> None:
@@ -256,10 +421,13 @@ def _run_task(task: str | None) -> None:
             # One-shot: no session memory across process invocations.
             loop.run(task, session=False)
             return
-        console.print(
-            "[bold]Sun[/bold] — interactive mode (session memory on). "
-            "[dim]clear · tokens · exit[/dim]"
+        redis_hint = (
+            "[dim]/new · /sessions · /resume <id> · /memory · tokens · exit[/dim]"
+            if loop.has_store()
+            else "[dim]/new · /memory · tokens · exit[/dim] "
+            "[dim yellow](set SUN_REDIS_URL for /resume)[/dim yellow]"
         )
+        console.print(f"[bold]Sun[/bold] — interactive mode. {redis_hint}")
         while True:
             try:
                 line = console.input("[bold cyan]sun>[/bold cyan] ").strip()
@@ -268,34 +436,20 @@ def _run_task(task: str | None) -> None:
                 raise typer.Exit(0) from None
             if not line:
                 continue
-            low = line.lower()
-            if low in _REPL_EXIT:
-                console.print("bye")
-                raise typer.Exit(0)
-            if low in _REPL_CLEAR:
-                loop.clear_session()
-                console.print("[dim]Session cleared.[/dim]")
+            if _repl_handle_line(loop, line):
                 continue
-            if low in _REPL_TOKENS:
-                ctx = loop.session_context()
-                usage = loop.session_usage()
-                if ctx is None:
-                    console.print("[dim]No session yet (0 tokens).[/dim]")
-                else:
-                    n = ctx.token_estimate()
-                    turns = ctx.user_turns()
-                    label = f"~{n} ctx tokens" if n >= 0 else "ctx tokens unknown"
-                    console.print(
-                        f"[dim]{label} · {turns} user turn(s) · "
-                        f"api {usage.total_tokens} tok[/dim]"
-                    )
-                continue
-            loop.run(line, session=True)
+            try:
+                loop.run(line, session=True)
+            except SessionStoreError as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(1) from exc
             ctx = loop.session_context()
             if ctx is not None:
                 n = ctx.token_estimate()
+                sid = loop.session_id()
+                sid_bit = f" · {sid}" if sid else ""
                 if n >= 0:
-                    console.print(f"[dim]session ~{n} ctx tokens[/dim]")
+                    console.print(f"[dim]session ~{n} ctx tokens{sid_bit}[/dim]")
     finally:
         if sink is not None:
             sink.close()
@@ -367,6 +521,187 @@ def model(
 
 
 @app.command()
+def persona(
+    edit: bool = typer.Option(False, "--edit", "-e", help="Open PERSONA.md in an editor."),
+    init: bool = typer.Option(
+        False, "--init", help="Create a project-local .sun/PERSONA.md in cwd."
+    ),
+) -> None:
+    """Show or edit PERSONA.md (used to seed SQLite persona once).
+
+    Durable edits: prefer `sun memory set --kind persona`.
+    """
+    settings = load_settings()
+    if init:
+        path = Path.cwd() / ".sun" / "PERSONA.md"
+        created = ensure_persona_file(path)
+        console.print(
+            f"[green]✓ {'Created' if created else 'Already exists'}[/green] {path}"
+        )
+    else:
+        path = resolve_persona_path(settings.persona_path)
+        ensure_persona_file(path)
+
+    if edit:
+        console.print(f"[cyan]Opening[/cyan] {path}")
+        open_persona_in_editor(path)
+        return
+
+    text = load_persona_text(path)
+    preview = text if len(text) <= 4000 else text[:4000] + "\n…"
+    console.print(
+        Panel(
+            preview or "[dim](empty)[/dim]",
+            title=f"PERSONA.md · {path}",
+            border_style="cyan",
+        )
+    )
+    console.print(
+        "[dim]File seed only. Durable 人格/规则/背景 →[/dim] "
+        "[bold]sun memory[/bold]"
+    )
+
+
+@app.command()
+def memory(
+    action: str = typer.Argument(
+        "list",
+        help="list | show | set | delete",
+    ),
+    target: str = typer.Argument(
+        "",
+        help="For show/delete: entry id. For set: unused.",
+    ),
+    kind: str = typer.Option(
+        "background",
+        "--kind",
+        "-k",
+        help=f"Entry kind: {', '.join(KINDS)}",
+    ),
+    key: str = typer.Option("default", "--key", help="Slug within kind (unique)."),
+    title: str = typer.Option("", "--title", "-t", help="Short title."),
+    file: str = typer.Option(
+        "", "--file", "-f", help="Read content from a text file."
+    ),
+    content: str = typer.Option("", "--content", "-c", help="Inline content."),
+) -> None:
+    """Manage SQLite durable memory (persona / rules / background / prompt).
+
+    Not cleared by sun sessions --prune. Deletes always require confirmation.
+    """
+    settings = load_settings()
+    mem = open_long_memory(settings.sqlite_path)
+    act = action.strip().lower()
+    try:
+        if act == "list":
+            _print_memory_table(mem.list())
+            console.print(f"[dim]db → {mem.path}[/dim]")
+            return
+
+        if act == "show":
+            if not target.isdigit():
+                console.print("[red]Usage: sun memory show <id>[/red]")
+                raise typer.Exit(1)
+            entry = mem.get(int(target))
+            if entry is None:
+                console.print(f"[red]No entry id={target}[/red]")
+                raise typer.Exit(1)
+            console.print(
+                Panel(
+                    entry.content,
+                    title=f"#{entry.id} {entry.kind}/{entry.key} · {entry.title}",
+                    border_style="cyan",
+                )
+            )
+            return
+
+        if act == "set":
+            body = content.strip()
+            if file.strip():
+                body = Path(file).read_text(encoding="utf-8").strip()
+            if not body:
+                if not sys.stdin.isatty():
+                    console.print("[red]Provide --content or --file[/red]")
+                    raise typer.Exit(1)
+                body = Prompt.ask("Content (one line or paste)").strip()
+            if not body:
+                console.print("[red]Empty content[/red]")
+                raise typer.Exit(1)
+            try:
+                entry = mem.upsert(kind=kind, key=key, content=body, title=title)
+            except LongMemoryError as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(1) from exc
+            console.print(
+                f"[green]✓ Saved[/green] #{entry.id} {entry.kind}/{entry.key} → {mem.path}"
+            )
+            return
+
+        if act == "delete":
+            if not target.isdigit():
+                console.print("[red]Usage: sun memory delete <id>[/red]")
+                raise typer.Exit(1)
+            eid = int(target)
+            entry = mem.get(eid)
+            if entry is None:
+                console.print(f"[red]No entry id={eid}[/red]")
+                raise typer.Exit(1)
+            console.print(
+                Panel(
+                    f"{entry.kind}/{entry.key}\n{entry.title}\n\n{entry.content[:500]}",
+                    title=f"⚠ Delete durable memory #{eid}",
+                    border_style="red",
+                )
+            )
+            if not sys.stdin.isatty() or not Confirm.ask(
+                "Permanently delete this SQLite entry? (not undoable)", default=False
+            ):
+                console.print("[dim]Cancelled.[/dim]")
+                raise typer.Exit(0)
+            mem.delete(eid)
+            console.print(f"[green]Deleted[/green] #{eid}")
+            return
+
+        console.print("[red]Unknown action. Use list|show|set|delete[/red]")
+        raise typer.Exit(1)
+    finally:
+        mem.close()
+
+
+@app.command()
+def sessions(
+    prune: bool = typer.Option(
+        False,
+        "--prune",
+        help="Delete Redis chat sessions for this cwd (does NOT touch SQLite).",
+    ),
+) -> None:
+    """List (or prune) Redis chat sessions for the current directory.
+
+    Requires SUN_REDIS_URL. Chat memory only — SQLite durable memory is untouched.
+    """
+    settings = load_settings()
+    store = _connect_store(settings)
+    if store is None:
+        console.print(
+            "[red]SUN_REDIS_URL not set.[/red] "
+            "Add e.g. [bold]SUN_REDIS_URL=redis://127.0.0.1:6379/0[/bold] to .env"
+        )
+        raise typer.Exit(1)
+    cwd = str(Path.cwd())
+    if prune:
+        if sys.stdin.isatty() and not Confirm.ask(
+            f"Delete all sessions for cwd {cwd}?", default=False
+        ):
+            console.print("Cancelled.")
+            raise typer.Exit(0)
+        deleted = store.prune(cwd=cwd)
+        console.print(f"[green]Pruned {len(deleted)} session(s).[/green]")
+        return
+    _print_sessions_table(store.list_sessions(cwd=cwd))
+
+
+@app.command()
 def config() -> None:
     """Show the current effective configuration (secrets masked)."""
     s = load_settings()
@@ -382,6 +717,11 @@ def config() -> None:
     table.add_row("api_key", mask(s.api_key))
     table.add_row("base_url", s.base_url)
     table.add_row("model", s.model)
+    table.add_row(
+        "redis_url",
+        s.redis_url.strip() or "[dim](off — no persistence)[/dim]",
+    )
+    table.add_row("redis_prefix", s.redis_prefix or "sun")
     table.add_row("max_turns", str(s.max_turns))
     table.add_row(
         "reasoning_effort",
@@ -393,6 +733,19 @@ def config() -> None:
     table.add_row(
         "workspace_root",
         s.workspace_root.strip() or "[dim](cwd)[/dim]",
+    )
+    table.add_row(
+        "persona_path",
+        s.persona_path.strip()
+        or str(resolve_persona_path(""))
+        + " [dim](auto)[/dim]",
+    )
+    from .long_memory import resolve_sqlite_path
+
+    table.add_row(
+        "sqlite_path",
+        s.sqlite_path.strip()
+        or str(resolve_sqlite_path("")) + " [dim](auto)[/dim]",
     )
     table.add_row("streaming", str(s.streaming))
     table.add_row("show_usage", str(s.show_usage))
@@ -466,7 +819,18 @@ def _main(ctx: typer.Context) -> None:
 
 # Known subcommand names — anything else as the first arg is treated as a
 # free-form task and routed to `run`.
-_KNOWN_COMMANDS = {"run", "model", "config", "update", "remove", "version", "help"}
+_KNOWN_COMMANDS = {
+    "run",
+    "model",
+    "persona",
+    "memory",
+    "sessions",
+    "config",
+    "update",
+    "remove",
+    "version",
+    "help",
+}
 
 
 def main() -> None:

@@ -47,6 +47,8 @@ def test_all_builtin_tools_registered():
         "finish",
         "exit_repl",
         "session_search",
+        "secret_vault_search",
+        "secret_vault_get",
     } <= names
 
 

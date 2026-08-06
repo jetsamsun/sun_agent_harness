@@ -128,6 +128,13 @@ class Settings(BaseSettings):
     sqlite_path: str = ""
     """SQLite durable memory path. Empty = ./long_memory.db (project-local, like .env)."""
 
+    # --- Secret vault (Dawnsight / mqeng.com) ---
+    secret_vault_url: str = "https://mqeng.com"
+    """Base URL for the secret vault API (no trailing path)."""
+
+    secret_vault_token: str = ""
+    """API token for X-Secret-Vault-Token. From SUN_SECRET_VAULT_TOKEN; never log it."""
+
     # --- Observability (Stage 2⑥) ---
     streaming: bool = True
     """Stream assistant text deltas to the CLI while the model thinks."""

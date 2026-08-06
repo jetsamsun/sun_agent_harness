@@ -1047,6 +1047,35 @@ def exit_repl(farewell: str = "") -> dict:
 
 
 @registry.tool()
+def secret_vault_search(query: str) -> dict:
+    """Search the mqeng.com secret vault for credential metadata (no secrets yet).
+
+    Use FIRST when the user asks to open/login/access a site, system, or project
+    (e.g. 新准运/zyos 前端、数据库、服务器) and you need URL/账号/密码.
+    Do NOT ask the user for the address if the vault may have it.
+    Flow: secret_vault_search → pick secret_key → secret_vault_get.
+
+    Returns candidates with secret_key / name / category / environment only.
+
+    :param query: Natural language query, e.g. \"zyos 本地前端\" or \"新准运测试账号\".
+    """
+    return _secret_vault_search_impl(query)
+
+
+@registry.tool()
+def secret_vault_get(key: str) -> dict:
+    """Fetch one secret vault record payload by secret_key (includes credentials).
+
+    Call after secret_vault_search. Use payload only for the current task
+    (open browser / login / connect). Do NOT write secrets into memory, files,
+    git, or user-visible dumps unless the user explicitly asks to see them.
+
+    :param key: secret_key from search results (e.g. zyos-local-frontend).
+    """
+    return _secret_vault_get_impl(key)
+
+
+@registry.tool()
 def session_search(
     query: str = "",
     session_id: str = "",
@@ -1133,13 +1162,14 @@ def memory_list(kind: str = "") -> dict:
 
 @registry.tool()
 def memory_get(entry_id: int = 0, kind: str = "", key: str = "") -> dict:
-    """Get one durable memory entry by id, or by kind+key.
+    """Get one durable memory entry by id or by kind.
 
     Use for natural language like「我的人格写了什么」「看一下铁律」.
+    Each kind has exactly one entry (key is ignored).
 
     :param entry_id: Numeric id from memory_list (preferred).
-    :param kind: Kind when looking up by key (system/iron/dev_env/persona/project/other).
-    :param key: Key within kind (default is often \"default\").
+    :param kind: Kind (system/iron/dev_env/persona/project/other or Chinese label).
+    :param key: Ignored (kept for compatibility).
     """
     from ..long_memory import LongMemoryError, open_long_memory
 
@@ -1148,14 +1178,12 @@ def memory_get(entry_id: int = 0, kind: str = "", key: str = "") -> dict:
         try:
             if entry_id and int(entry_id) > 0:
                 entry = mem.get(int(entry_id))
-            elif kind.strip() and key.strip():
-                entry = mem.get_by_key(kind, key)
             elif kind.strip():
-                entry = mem.get_by_key(kind, "default")
+                entry = mem.get_kind(kind)
             else:
                 return {
                     "success": False,
-                    "error": "Provide entry_id, or kind (+ optional key)",
+                    "error": "Provide entry_id or kind",
                 }
         except LongMemoryError as exc:
             return {"success": False, "error": str(exc)}
@@ -1172,31 +1200,42 @@ def memory_upsert(
     content: str,
     key: str = "default",
     title: str = "",
+    append: bool = False,
 ) -> dict:
-    """Create or update a durable memory entry (SQLite).
+    """Create or update the sole durable memory entry for a kind (SQLite).
 
-    Use for natural language like「记住…」「加一条铁律…」「更新人格为…」.
-    Kinds: system / iron / dev_env / persona / project / other (Chinese labels also ok).
+    Each kind has exactly ONE entry (system/iron/dev_env/persona/project/other).
+    Never create other/cleanup-style extra keys — use append=true to add a
+    paragraph, or pass the full rewritten section as content.
+
+    Use for「记住…」「加一条铁律…」「更新人格为…」.
     Changes apply to the next task's system prompt (current turn already loaded).
 
-    :param kind: Memory category.
-    :param content: Full text to store (non-empty).
-    :param key: Slug within kind; unique per kind. Default \"default\".
-    :param title: Optional short title.
+    :param kind: Memory category (Chinese labels ok).
+    :param content: Text to store (non-empty). With append=false this replaces.
+    :param key: Ignored (compat); always stored as default.
+    :param title: Optional short title for the kind section.
+    :param append: If true, append content after the existing text for that kind.
     """
     from ..long_memory import LongMemoryError, open_long_memory
 
     mem = open_long_memory(_SQLITE_PATH[0])
     try:
         try:
-            entry = mem.upsert(kind=kind, key=key, content=content, title=title)
+            entry = mem.upsert(
+                kind=kind,
+                key=key,
+                content=content,
+                title=title,
+                append=bool(append),
+            )
         except LongMemoryError as exc:
             return {"success": False, "error": str(exc), "kinds": list(_memory_kinds())}
         return {
             "success": True,
             "db": str(mem.path),
             "entry": entry.as_dict(),
-            "note": "已保存；下一轮任务组装 system prompt 时生效。",
+            "note": "已保存（每类仅一条）；下一轮任务组装 system prompt 时生效。",
         }
     finally:
         mem.close()
@@ -1242,6 +1281,8 @@ _LLM_CONFIG: dict[str, str] = {"api_key": "", "base_url": "", "model": ""}
 _SQLITE_PATH = [""]
 # Redis SessionStore for session_search (None = Redis not configured).
 _SESSION_STORE: list[Any] = [None]
+# Dawnsight secret vault (mqeng.com).
+_SECRET_VAULT: dict[str, str] = {"url": "https://mqeng.com", "token": ""}
 
 _SESSION_SEARCH_EXCERPT = 420
 _SESSION_SEARCH_MAX_SESSIONS = 40
@@ -1262,6 +1303,155 @@ def set_sqlite_path(path: str) -> None:
 def set_session_store(store: Any | None) -> None:
     """Inject Redis SessionStore (or None) for session_search."""
     _SESSION_STORE[0] = store
+
+
+def set_secret_vault_config(*, url: str = "", token: str = "") -> None:
+    """Inject secret vault base URL + API token (from Settings / .env)."""
+    base = (url or "").strip().rstrip("/") or "https://mqeng.com"
+    _SECRET_VAULT["url"] = base
+    _SECRET_VAULT["token"] = (token or "").strip()
+
+
+def _vault_unwrap_payload(body: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize FastAdmin-ish responses (payload may be in code or data)."""
+    code = body.get("code")
+    data = body.get("data")
+    if isinstance(code, dict):
+        return code
+    if isinstance(data, dict):
+        return data
+    return None
+
+
+def _vault_http_get(path: str, params: dict[str, str]) -> dict[str, Any]:
+    token = _SECRET_VAULT.get("token") or ""
+    base = (_SECRET_VAULT.get("url") or "https://mqeng.com").rstrip("/")
+    if not token:
+        return {
+            "success": False,
+            "error": (
+                "SUN_SECRET_VAULT_TOKEN not configured. "
+                "Set it in .env (flat key), then restart sun."
+            ),
+        }
+    qs = urlencode(params)
+    url = f"{base}{path}?{qs}" if qs else f"{base}{path}"
+    req = Request(
+        url,
+        headers={
+            "X-Secret-Vault-Token": token,
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": _FETCH_USER_AGENT,
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(req, timeout=_FETCH_TIMEOUT_S) as resp:  # noqa: S310
+            status = getattr(resp, "status", None) or resp.getcode()
+            raw = resp.read(512_000)
+            content_type = resp.headers.get("Content-Type", "") or ""
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read(800).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "error": f"HTTP {exc.code}: {exc.reason}",
+            "status": exc.code,
+            "detail": detail[:400],
+        }
+    except URLError as exc:
+        return {"success": False, "error": f"Network error: {exc.reason}"}
+    except TimeoutError:
+        return {"success": False, "error": f"Timed out after {_FETCH_TIMEOUT_S}s"}
+    except OSError as exc:
+        return {"success": False, "error": str(exc)}
+
+    text = _decode_http_body(raw, content_type)
+    try:
+        body = json.loads(text)
+    except json.JSONDecodeError:
+        return {
+            "success": False,
+            "error": "Vault response is not JSON",
+            "status": int(status) if status else 0,
+            "preview": text[:300],
+        }
+    if not isinstance(body, dict):
+        return {"success": False, "error": "Unexpected vault JSON shape"}
+
+    payload = _vault_unwrap_payload(body)
+    code = body.get("code")
+    # Error responses use numeric code == 0 (or non-dict failure).
+    if payload is None:
+        msg = str(body.get("msg") or "vault request failed")
+        return {
+            "success": False,
+            "error": msg,
+            "status": int(status) if status else 0,
+            "code": code if not isinstance(code, dict) else None,
+        }
+    if isinstance(code, int) and code == 0:
+        return {
+            "success": False,
+            "error": str(body.get("msg") or "vault request failed"),
+            "payload_keys": list(payload.keys()),
+        }
+    return {"success": True, "status": int(status) if status else 0, "data": payload}
+
+
+def _secret_vault_search_impl(query: str) -> dict[str, Any]:
+    q = (query or "").strip()
+    if not q:
+        return {"success": False, "error": "query must be non-empty"}
+    if len(q) > 100:
+        return {"success": False, "error": "query must be <= 100 characters"}
+    out = _vault_http_get("/api/secret_vault/search", {"q": q})
+    if not out.get("success"):
+        return out
+    data = out.get("data") or {}
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        items = []
+    return {
+        "success": True,
+        "query": data.get("query", q) if isinstance(data, dict) else q,
+        "count": len(items),
+        "items": items,
+        "hint": (
+            "Pick the best secret_key, then call secret_vault_get. "
+            "Do not ask the user for URL/账号 if a candidate fits."
+        ),
+    }
+
+
+def _secret_vault_get_impl(key: str) -> dict[str, Any]:
+    secret_key = (key or "").strip()
+    if not secret_key:
+        return {"success": False, "error": "key must be non-empty"}
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,99}$", secret_key):
+        return {"success": False, "error": "invalid secret_key format"}
+    out = _vault_http_get("/api/secret_vault/get", {"key": secret_key})
+    if not out.get("success"):
+        return out
+    data = out.get("data") or {}
+    if not isinstance(data, dict):
+        return {"success": False, "error": "empty vault payload"}
+    return {
+        "success": True,
+        "secret_key": data.get("secret_key") or secret_key,
+        "name": data.get("name") or "",
+        "category": data.get("category") or "",
+        "environment": data.get("environment") or "",
+        "payload": data.get("payload"),
+        "note": (
+            "Temporary use only. Do not store in SQLite memory, files, or git. "
+            "Avoid echoing full passwords unless the user asks."
+        ),
+    }
 
 
 def _transcript_line_text(msg: dict[str, Any]) -> str:

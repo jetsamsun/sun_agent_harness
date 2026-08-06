@@ -52,6 +52,7 @@ from .tools import (
     set_edit_confirm_fn,
     set_llm_config,
     set_plan_confirm_fn,
+    set_secret_vault_config,
     set_session_store,
     set_shell_timeout,
     set_sqlite_path,
@@ -304,6 +305,10 @@ def _build_loop() -> tuple[AgentLoop, TraceSink | None]:
         model=settings.model,
     )
     set_sqlite_path(settings.sqlite_path)
+    set_secret_vault_config(
+        url=settings.secret_vault_url,
+        token=settings.secret_vault_token,
+    )
     set_auto_git_checkpoint(settings.auto_git_checkpoint)
     set_ask_fn(_make_ask_fn())
     set_plan_confirm_fn(_make_plan_confirm_fn())
@@ -710,8 +715,17 @@ def memory(
         "-k",
         help=f"Entry kind: {', '.join(KINDS)}（系统提示词/铁律/开发环境/人格/项目背景/其他）",
     ),
-    key: str = typer.Option("default", "--key", help="Slug within kind (unique)."),
+    key: str = typer.Option(
+        "default",
+        "--key",
+        help="Ignored (compat). Each kind has exactly one entry.",
+    ),
     title: str = typer.Option("", "--title", "-t", help="Short title."),
+    append: bool = typer.Option(
+        False,
+        "--append",
+        help="Append to existing content for this kind instead of replace.",
+    ),
     file: str = typer.Option(
         "", "--file", "-f", help="Read content from a text file."
     ),
@@ -763,7 +777,13 @@ def memory(
                 console.print("[red]Empty content[/red]")
                 raise typer.Exit(1)
             try:
-                entry = mem.upsert(kind=kind, key=key, content=body, title=title)
+                entry = mem.upsert(
+                    kind=kind,
+                    key=key,
+                    content=body,
+                    title=title,
+                    append=append,
+                )
             except LongMemoryError as exc:
                 console.print(f"[red]{exc}[/red]")
                 raise typer.Exit(1) from exc

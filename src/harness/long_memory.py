@@ -43,6 +43,8 @@ _LEGACY_KIND_MAP = {
 }
 _MAX_BLOCK_CHARS = 24_000
 _LOCAL_DB_NAME = "long_memory.db"
+# Exactly one row per kind; key is kept for display/compat and always this value.
+_SINGLE_KEY = "default"
 
 DEFAULT_SYSTEM_PROMPT = """你是 Sun，本机自主编程助手。默认中文（用户另要求除外）。语气跟人格，冲突听铁律。
 聊天在 Redis（可 /sessions prune）；长久记忆在 SQLite（不 prune）。
@@ -57,9 +59,11 @@ Linux/macOS：可用常见 Unix 命令；仍优先专用工具。
 验证：改完 check_syntax；有测则 run_tests 直至绿（可选 run_lint）；测红禁 finish；只凭工具输出宣称成功。
 
 规划：不清先 ask_user；非琐碎先 propose_plan（含步骤与验收），获批再大改；todo 最多一个 in_progress；简单问答可跳过 plan。
+密钥库：登录、打开站点、账号密码、项目访问地址等凭据需求时，先 secret_vault_search → secret_vault_get，禁止先问用户要地址/账号；token 从配置读取，勿读 .env 原文、勿写入记忆/日志/仓库。
 
-记忆：六类 system / iron / dev_env / persona / project / other。
+记忆：六类 system / iron / dev_env / persona / project / other；每类仅一条（禁止 other/cleanup 这类多 key）。
 自然语言「看/改/加/删记忆」直接调 memory_list|get|upsert|delete，勿让用户敲 /memory。
+增补某类时先 memory_get 读出现有全文，再整段 memory_upsert 写回（可拼在原文后）。
 看全部：原样输出 formatted（【系统提示词】/[开发环境]/【铁律】/【人格】/【项目背景】/【其他】），禁改成表格或摘要。改 system/iron 需谨慎。
 
 其它：问模型立刻 list_models（禁扫 env / 读 .env）；无专用工具再用 run_shell。
@@ -181,6 +185,8 @@ class LongMemory:
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
         self.migrate_legacy_kinds()
+        self.coalesce_one_per_kind()
+        self._ensure_unique_kind_schema()
 
     def close(self) -> None:
         self._conn.close()
@@ -196,10 +202,11 @@ class LongMemory:
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                UNIQUE(kind, key)
+                UNIQUE(kind)
             )
             """
         )
+        # Older DBs may still have UNIQUE(kind,key); coalesce + rebuild fixes that.
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_entries_kind ON entries(kind)"
         )
@@ -209,27 +216,162 @@ class LongMemory:
         """Rename old kinds (rules/background/prompt) to the new taxonomy."""
         changed = 0
         for old, new in _LEGACY_KIND_MAP.items():
-            cur = self._conn.execute(
-                "SELECT id, key FROM entries WHERE kind=?", (old,)
-            )
+            cur = self._conn.execute("SELECT * FROM entries WHERE kind=?", (old,))
             for row in cur.fetchall():
                 eid = int(row["id"])
-                key = str(row["key"])
-                # Avoid UNIQUE(kind,key) clash: rename key if needed.
-                clash = self._conn.execute(
-                    "SELECT 1 FROM entries WHERE kind=? AND key=?", (new, key)
+                existing = self._conn.execute(
+                    "SELECT id, content, title FROM entries WHERE kind=? AND id!=?",
+                    (new, eid),
                 ).fetchone()
-                new_key = key
-                if clash:
-                    new_key = f"{key}_from_{old}"
-                self._conn.execute(
-                    "UPDATE entries SET kind=?, key=? WHERE id=?",
-                    (new, new_key, eid),
-                )
+                if existing is None:
+                    key = str(row["key"] or _SINGLE_KEY)
+                    clash = self._conn.execute(
+                        "SELECT 1 FROM entries WHERE kind=? AND key=?", (new, key)
+                    ).fetchone()
+                    new_key = f"{key}_from_{old}" if clash else key
+                    try:
+                        self._conn.execute(
+                            "UPDATE entries SET kind=?, key=? WHERE id=?",
+                            (new, new_key, eid),
+                        )
+                    except sqlite3.IntegrityError:
+                        # UNIQUE(kind): fold into the sole target row.
+                        existing = self._conn.execute(
+                            "SELECT id, content, title FROM entries WHERE kind=?",
+                            (new,),
+                        ).fetchone()
+                        if existing is None:
+                            raise
+                        self._merge_row_into(int(existing["id"]), row)
+                        self._conn.execute("DELETE FROM entries WHERE id=?", (eid,))
+                else:
+                    self._merge_row_into(int(existing["id"]), row)
+                    self._conn.execute("DELETE FROM entries WHERE id=?", (eid,))
                 changed += 1
         if changed:
             self._conn.commit()
         return changed
+
+    def _merge_row_into(self, keep_id: int, donor: sqlite3.Row) -> None:
+        keep = self._conn.execute(
+            "SELECT content, title FROM entries WHERE id=?", (keep_id,)
+        ).fetchone()
+        if keep is None:
+            return
+        a = str(keep["content"] or "").strip()
+        b = str(donor["content"] or "").strip()
+        title_d = str(donor["title"] or "").strip()
+        key_d = str(donor["key"] or "").strip()
+        if title_d and key_d not in {"", _SINGLE_KEY}:
+            chunk = f"## {title_d}\n{b}" if b else f"## {title_d}"
+        else:
+            chunk = b
+        merged = "\n\n".join(p for p in (a, chunk) if p).strip() or "(empty)"
+        self._conn.execute(
+            "UPDATE entries SET content=?, key=?, updated_at=? WHERE id=?",
+            (merged, _SINGLE_KEY, _utcnow(), keep_id),
+        )
+
+    def coalesce_one_per_kind(self) -> int:
+        """Merge multiple rows of the same kind into one (_SINGLE_KEY). Returns kinds merged."""
+        cur = self._conn.execute(
+            "SELECT kind, COUNT(*) AS n FROM entries GROUP BY kind HAVING n > 1"
+        )
+        dup_kinds = [str(r["kind"]) for r in cur.fetchall()]
+        if not dup_kinds:
+            # Still normalize keys to default when single row has non-default key.
+            self._conn.execute(
+                "UPDATE entries SET key=? WHERE key!=?",
+                (_SINGLE_KEY, _SINGLE_KEY),
+            )
+            self._conn.commit()
+            return 0
+
+        merged = 0
+        for kind in dup_kinds:
+            rows = self._conn.execute(
+                "SELECT * FROM entries WHERE kind=? ORDER BY id", (kind,)
+            ).fetchall()
+            if len(rows) < 2:
+                continue
+            parts: list[str] = []
+            titles: list[str] = []
+            for r in rows:
+                body = str(r["content"] or "").strip()
+                title = str(r["title"] or "").strip()
+                key = str(r["key"] or "").strip()
+                if title and title != _KIND_LABELS.get(kind, kind) and key != _SINGLE_KEY:
+                    parts.append(f"## {title}\n{body}" if body else f"## {title}")
+                elif body:
+                    parts.append(body)
+                if title:
+                    titles.append(title)
+            content = "\n\n".join(p for p in parts if p).strip()
+            if not content:
+                content = "(empty)"
+            keep_id = int(rows[0]["id"])
+            created = str(rows[0]["created_at"] or _utcnow())
+            updated = str(rows[-1]["updated_at"] or _utcnow())
+            title = (
+                _KIND_LABELS.get(kind, kind)
+                if len(set(titles)) != 1
+                else titles[0]
+            )
+            self._conn.execute(
+                """
+                UPDATE entries
+                SET key=?, title=?, content=?, created_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (_SINGLE_KEY, title, content, created, updated, keep_id),
+            )
+            for r in rows[1:]:
+                self._conn.execute("DELETE FROM entries WHERE id=?", (int(r["id"]),))
+            merged += 1
+        self._conn.commit()
+        return merged
+
+    def _schema_has_unique_kind(self) -> bool:
+        """True when table enforces UNIQUE on kind alone."""
+        cur = self._conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'")
+        row = cur.fetchone()
+        if not row or not row["sql"]:
+            return False
+        sql = str(row["sql"]).upper().replace(" ", "")
+        # UNIQUE(kind) or kind TEXT NOT NULL UNIQUE
+        return "UNIQUE(KIND)" in sql or "KINDTEXTNOTNULLUNIQUE" in sql
+
+    def _ensure_unique_kind_schema(self) -> None:
+        """Rebuild table so kind is UNIQUE (one human-facing section per kind)."""
+        if self._schema_has_unique_kind():
+            return
+        self.coalesce_one_per_kind()
+        self._conn.execute(
+            """
+            CREATE TABLE entries_onekind (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL UNIQUE,
+                key TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            INSERT INTO entries_onekind(id, kind, key, title, content, created_at, updated_at)
+            SELECT id, kind, ?, title, content, created_at, updated_at FROM entries
+            """,
+            (_SINGLE_KEY,),
+        )
+        self._conn.execute("DROP TABLE entries")
+        self._conn.execute("ALTER TABLE entries_onekind RENAME TO entries")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entries_kind ON entries(kind)"
+        )
+        self._conn.commit()
 
     def _row(self, row: sqlite3.Row) -> MemoryEntry:
         return MemoryEntry(
@@ -257,43 +399,58 @@ class LongMemory:
         row = cur.fetchone()
         return self._row(row) if row else None
 
-    def get_by_key(self, kind: str, key: str) -> MemoryEntry | None:
+    def get_by_key(self, kind: str, key: str = "") -> MemoryEntry | None:
+        """Return the single entry for kind (key ignored; always one-per-kind)."""
         kind = normalize_kind(kind)
         cur = self._conn.execute(
-            "SELECT * FROM entries WHERE kind=? AND key=?", (kind, key)
+            "SELECT * FROM entries WHERE kind=? LIMIT 1", (kind,)
         )
         row = cur.fetchone()
         return self._row(row) if row else None
+
+    def get_kind(self, kind: str) -> MemoryEntry | None:
+        return self.get_by_key(kind)
 
     def upsert(
         self,
         *,
         kind: str,
-        key: str,
+        key: str = "",
         content: str,
         title: str = "",
+        append: bool = False,
     ) -> MemoryEntry:
+        """Create or replace the sole entry for ``kind`` (one human section each)."""
         kind = normalize_kind(kind)
-        key = (key or "default").strip()
-        if not key:
-            raise LongMemoryError("key must be non-empty")
         content = (content or "").strip()
         if not content:
             raise LongMemoryError("content must be non-empty")
         now = _utcnow()
-        self._conn.execute(
-            """
-            INSERT INTO entries(kind, key, title, content, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(kind, key) DO UPDATE SET
-                title=excluded.title,
-                content=excluded.content,
-                updated_at=excluded.updated_at
-            """,
-            (kind, key, title.strip(), content, now, now),
+        existing = self.get_kind(kind)
+        if existing is not None and append:
+            content = (existing.content.strip() + "\n\n" + content).strip()
+        title_f = (title or "").strip() or (
+            existing.title if existing and existing.title else _KIND_LABELS.get(kind, kind)
         )
+        if existing is not None:
+            self._conn.execute(
+                """
+                UPDATE entries
+                SET key=?, title=?, content=?, updated_at=?
+                WHERE id=?
+                """,
+                (_SINGLE_KEY, title_f, content, now, existing.id),
+            )
+        else:
+            self._conn.execute(
+                """
+                INSERT INTO entries(kind, key, title, content, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (kind, _SINGLE_KEY, title_f, content, now, now),
+            )
         self._conn.commit()
-        entry = self.get_by_key(kind, key)
+        entry = self.get_kind(kind)
         assert entry is not None
         return entry
 
@@ -416,14 +573,14 @@ class LongMemory:
                 return
             lines.append(chunk_h)
             total += len(chunk_h)
-            for e in group:
-                head = e.title or e.key
-                chunk = f"### {head} [{e.kind}/{e.key}]\n{e.content}\n"
-                if total + len(chunk) > _MAX_BLOCK_CHARS:
-                    lines.append("\n… [长久记忆截断，部分条目未注入]\n")
-                    return
-                lines.append(chunk)
-                total += len(chunk)
+            # One entry per kind — inject body under the kind heading only.
+            e = group[0]
+            chunk = f"{e.content}\n"
+            if total + len(chunk) > _MAX_BLOCK_CHARS:
+                lines.append("\n… [长久记忆截断，部分条目未注入]\n")
+                return
+            lines.append(chunk)
+            total += len(chunk)
 
         _append_group("system")
         _append_group("iron")

@@ -24,9 +24,54 @@ def test_upsert_list_delete(tmp_path):
         title="编码习惯",
     )
     assert e.id > 0
+    assert e.key == "default"
     assert mem.list(kind="other")[0].content == "优先用 uv"
     assert mem.delete(e.id) is True
     assert mem.list() == []
+    mem.close()
+
+
+def test_one_entry_per_kind_coalesce(tmp_path):
+    db = tmp_path / "m.db"
+    mem = LongMemory(db)
+    # Simulate pre-migration multi-key rows via raw SQL (old UNIQUE(kind,key)).
+    mem.close()
+    import sqlite3
+
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        DROP TABLE IF EXISTS entries;
+        CREATE TABLE entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            key TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(kind, key)
+        );
+        INSERT INTO entries(kind,key,title,content,created_at,updated_at)
+        VALUES ('other','default','发布流程','本地到正式','t1','t1');
+        INSERT INTO entries(kind,key,title,content,created_at,updated_at)
+        VALUES ('other','cleanup','临时文件清理','测完清临时文件','t2','t2');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    mem = LongMemory(db)
+    others = mem.list(kind="other")
+    assert len(others) == 1
+    assert others[0].key == "default"
+    assert "本地到正式" in others[0].content
+    assert "测完清临时文件" in others[0].content
+    # Second upsert must replace/append the same row, not create another.
+    mem.upsert(kind="other", content="额外一条", append=True)
+    others2 = mem.list(kind="other")
+    assert len(others2) == 1
+    assert "额外一条" in others2[0].content
     mem.close()
 
 

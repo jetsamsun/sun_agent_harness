@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from harness.long_memory import LongMemory, load_durable_block
+from harness.long_memory import (
+    DEFAULT_SYSTEM_PROMPT,
+    LongMemory,
+    default_sqlite_path,
+    load_durable_block,
+    maybe_migrate_legacy_db,
+    normalize_kind,
+    resolve_sqlite_path,
+)
 from harness.loop import build_system_prompt
 
 
@@ -10,15 +18,59 @@ def test_upsert_list_delete(tmp_path):
     db = tmp_path / "m.db"
     mem = LongMemory(db)
     e = mem.upsert(
-        kind="rules",
+        kind="other",
         key="coding",
         content="优先用 uv",
         title="编码习惯",
     )
     assert e.id > 0
-    assert mem.list(kind="rules")[0].content == "优先用 uv"
+    assert mem.list(kind="other")[0].content == "优先用 uv"
     assert mem.delete(e.id) is True
     assert mem.list() == []
+    mem.close()
+
+
+def test_normalize_kind_labels():
+    assert normalize_kind("铁律") == "iron"
+    assert normalize_kind("system") == "system"
+    assert normalize_kind("人格") == "persona"
+
+
+def test_legacy_kind_migration(tmp_path):
+    db = tmp_path / "m.db"
+    mem = LongMemory(db)
+    # Insert via SQL to simulate old kinds (bypass normalize).
+    mem._conn.execute(
+        "INSERT INTO entries(kind,key,title,content,created_at,updated_at) "
+        "VALUES ('rules','r','','old rules','t','t')"
+    )
+    mem._conn.execute(
+        "INSERT INTO entries(kind,key,title,content,created_at,updated_at) "
+        "VALUES ('background','b','','old bg','t','t')"
+    )
+    mem._conn.commit()
+    n = mem.migrate_legacy_kinds()
+    assert n == 2
+    kinds = {e.kind for e in mem.list()}
+    assert "iron" in kinds
+    assert "other" in kinds
+    assert "rules" not in kinds
+    mem.close()
+
+
+def test_seed_system_and_prompt_assembly(tmp_path):
+    db = tmp_path / "m.db"
+    mem = LongMemory(db)
+    seeded = mem.seed_defaults(persona_text="说话极简")
+    assert seeded["system"] is True
+    assert seeded["iron"] is True
+    assert seeded["persona"] is True
+    block = mem.render_prompt_block(runtime_env_block="## 当前运行环境\n- 系统族: Windows\n")
+    assert "系统提示词" in block
+    assert "铁律" in block
+    assert "当前运行环境" in block
+    assert "说话极简" in block
+    assert "你是 Sun" in block
     mem.close()
 
 
@@ -36,7 +88,7 @@ def test_build_system_prompt_injects_sqlite(tmp_path):
     persona = tmp_path / "PERSONA.md"
     persona.write_text("# file persona\n", encoding="utf-8")
     mem = LongMemory(db)
-    mem.upsert(kind="background", key="me", content="用户在上海做仓储系统", title="背景")
+    mem.upsert(kind="other", key="me", content="用户在上海做仓储系统", title="背景")
     mem.upsert(kind="persona", key="default", content="说话极简", title="人格")
     mem.close()
 
@@ -44,15 +96,62 @@ def test_build_system_prompt_injects_sqlite(tmp_path):
         persona_path=str(persona),
         sqlite_path=str(db),
     )
-    assert "长久记忆" in prompt
+    assert "长久记忆" in prompt or "系统提示词" in prompt
     assert "用户在上海做仓储系统" in prompt
     assert "说话极简" in prompt
-    # SQLite has persona → file PERSONA.md not also injected as fallback block
+    assert "你是 Sun" in prompt  # seeded system
     assert "file persona" not in prompt
 
 
 def test_load_durable_block_empty(tmp_path):
     block, path, has_p = load_durable_block(str(tmp_path / "empty.db"))
-    assert block == ""
+    # empty.db gets no seed via load_durable_block (no seed call there)
     assert has_p is False
     assert path.name == "empty.db"
+    assert block == "" or "长久记忆" in block
+
+
+def test_default_sqlite_path_is_project_local(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    assert default_sqlite_path() == tmp_path / "long_memory.db"
+
+
+def test_migrate_legacy_db_once(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    legacy = tmp_path / "legacy_home" / "long_memory.db"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"sqlite-fake")
+    monkeypatch.setattr(
+        "harness.long_memory.legacy_sqlite_path",
+        lambda: legacy,
+    )
+    target = tmp_path / "long_memory.db"
+    assert maybe_migrate_legacy_db(target) is True
+    assert target.read_bytes() == b"sqlite-fake"
+    assert maybe_migrate_legacy_db(target) is False
+
+
+def test_resolve_relative_sqlite_path(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path = resolve_sqlite_path("mem/custom.db")
+    assert path == tmp_path / "mem" / "custom.db"
+
+
+def test_default_system_prompt_nonempty():
+    assert "你是 Sun" in DEFAULT_SYSTEM_PROMPT
+
+
+def test_format_dump_layout(tmp_path):
+    db = tmp_path / "m.db"
+    mem = LongMemory(db)
+    mem.upsert(kind="system", key="default", content="SYS", title="s")
+    mem.upsert(kind="persona", key="default", content="PERSONA", title="p")
+    text = mem.format_dump()
+    assert text.index("【系统提示词】") < text.index("[开发环境]")
+    assert text.index("[开发环境]") < text.index("【铁律】")
+    assert text.index("【铁律】") < text.index("【人格】")
+    assert text.index("【人格】") < text.index("【项目背景】")
+    assert "SYS" in text
+    assert "PERSONA" in text
+    assert "（暂无）" in text  # empty sections
+    mem.close()

@@ -109,7 +109,7 @@ streaming · context compression (in-memory only for now).
 ### ④ 记忆与上下文（改大项目不爆窗口；记忆管理的第一层）
 - [x] **REPL 会话记忆（内存）**：`session=True` 跨 `sun>` 复用 Context；`/new` · `tokens` · `exit`
 - [x] **Redis 聊天记忆（可清）**：`SUN_REDIS_URL`；`/resume` `/sessions`；工作态+transcript；绑 cwd；`prune` 随时清；连不上硬失败
-- [x] **SQLite 长久记忆（稳固）**：`~/.config/sun/long_memory.db`（`SUN_SQLITE_PATH`）；人格/规则/背景/提示补充；**不会被 sessions prune 清除**；删除需 `sun memory delete` 确认
+- [x] **SQLite 长久记忆（稳固）**：默认 `./long_memory.db`；分类 system/iron/dev_env/persona/project/other；系统提示词入库；`memory_*` CRUD 工具；**不会被 sessions prune 清除**
 - [x] 上下文压缩：超 `context_max_tokens`（默认 90 万，硬顶 1M）时折叠旧轮为摘要 + 保留近尾
 - [x] 大输出裁剪：tool result 进 Context 前 head+tail 软截断（默认 12k 字符）
 - [ ] 相关文件召回：按任务只把相关文件读进上下文，不全塞（延后）
@@ -185,6 +185,7 @@ streaming · context compression (in-memory only for now).
 - [x] **会话持久化（Redis）** + 跨进程 `/resume`（需 `SUN_REDIS_URL`；见 Stage 2④）
 - [x] **长久记忆（SQLite）** + `sun memory` / `/memory`（见 Stage 2④）
 - [ ] **深续**：从 transcript 按需抽最近 K 轮进 Context
+- [x] **聊天历史检索**：`session_search`（按 cwd 搜 Redis transcript；问「还记得/秘密/上回」时用）
 - [ ] 记忆读写工具：agent 可主动 `remember` / `recall`，而非只靠隐性 Context
 - [ ]（可选）代码库语义检索（embedding / 简易索引）增强「相关文件召回」
 

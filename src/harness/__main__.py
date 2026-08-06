@@ -45,12 +45,16 @@ from .repl_input import read_repl_message
 from .session_store import SessionStore, SessionStoreError
 from .tools import (
     ToolExecutor,
+    fetch_model_status,
     registry,
     set_ask_fn,
     set_confirm_edits,
     set_edit_confirm_fn,
+    set_llm_config,
     set_plan_confirm_fn,
+    set_session_store,
     set_shell_timeout,
+    set_sqlite_path,
 )
 from .trace import TraceSink, default_trace_path
 from .workspace import set_workspace_root
@@ -294,11 +298,18 @@ def _build_loop() -> tuple[AgentLoop, TraceSink | None]:
     set_workspace_root(root)
     set_shell_timeout(settings.shell_timeout)
     set_confirm_edits(settings.confirm_edits)
+    set_llm_config(
+        api_key=settings.api_key,
+        base_url=settings.base_url,
+        model=settings.model,
+    )
+    set_sqlite_path(settings.sqlite_path)
     set_auto_git_checkpoint(settings.auto_git_checkpoint)
     set_ask_fn(_make_ask_fn())
     set_plan_confirm_fn(_make_plan_confirm_fn())
     set_edit_confirm_fn(_make_edit_confirm_fn())
     store = _connect_store(settings)
+    set_session_store(store)
     llm = LLMClient(settings)
     executor = ToolExecutor(registry, settings, confirm_fn=_make_confirm_fn())
     printer = _make_event_printer(show_usage=settings.show_usage)
@@ -316,9 +327,33 @@ def _build_loop() -> tuple[AgentLoop, TraceSink | None]:
     )
 
 
-_REPL_EXIT = {"exit", "quit", "/exit", "/quit"}
+_REPL_EXIT = {"exit", "quit", "/exit", "/quit", "bye", "q"}
+_REPL_EXIT_COMPACT = {
+    "exit",
+    "quit",
+    "/exit",
+    "/quit",
+    "bye",
+    "q",
+    "退出",
+    "退出sun",
+    "再见",
+    "拜拜",
+}
 _REPL_CLEAR = {"clear", "/clear", "/new", "new"}
 _REPL_TOKENS = {"tokens", "/tokens"}
+
+
+def _is_repl_exit(line: str) -> bool:
+    """True for exit / quit / 退出 / 退出 sun / 再见, etc."""
+    raw = line.strip()
+    if not raw or "\n" in raw:
+        return False
+    low = raw.lower()
+    if low in _REPL_EXIT:
+        return True
+    compact = "".join(raw.split()).lower()
+    return compact in _REPL_EXIT_COMPACT
 
 
 def _print_sessions_table(rows: list) -> None:
@@ -350,7 +385,7 @@ def _repl_handle_line(loop: AgentLoop, line: str) -> bool:
     cmd = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
 
-    if low in _REPL_EXIT:
+    if _is_repl_exit(raw):
         console.print("bye")
         raise typer.Exit(0)
 
@@ -407,21 +442,63 @@ def _repl_handle_line(loop: AgentLoop, line: str) -> bool:
         settings = load_settings()
         mem = open_long_memory(settings.sqlite_path)
         try:
-            if not arg or arg.lower() == "list":
+            if not arg or arg.lower() in {"list", "dump", "all"}:
+                _print_memory_dump(mem)
+            elif arg.lower() == "table":
                 _print_memory_table(mem.list())
+                console.print(f"[dim]db → {mem.path}[/dim]")
             else:
                 console.print(
-                    "[dim]REPL: /memory 列表。写入/删除请用[/dim] "
-                    "[bold]sun memory set|delete[/bold]"
+                    "[dim]REPL: /memory 全文；/memory table 表格。"
+                    " 写入/删除请用[/dim] [bold]sun memory set|delete[/bold]"
                 )
         finally:
             mem.close()
         return True
 
+    if cmd in {"/models", "models"}:
+        settings = load_settings()
+        set_llm_config(
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            model=settings.model,
+        )
+        _print_models_status(fetch_model_status())
+        return True
+
     return False
 
 
+def _print_models_status(info: dict) -> None:
+    current = str(info.get("current_model") or "")
+    base = str(info.get("base_url") or "")
+    console.print(f"[bold]当前模型[/bold] {current or '(未配置)'}")
+    console.print(f"[dim]endpoint[/dim] {base or '(未配置)'}")
+    if not info.get("success"):
+        console.print(f"[red]{info.get('error') or 'list models failed'}[/red]")
+        return
+    rows = info.get("available_models") or []
+    if not rows:
+        console.print("[dim]端点未返回可用模型列表。[/dim]")
+        return
+    table = Table(title=f"可用模型（{info.get('count', len(rows))}）", show_header=True)
+    table.add_column("model", style="cyan")
+    table.add_column("owned_by")
+    table.add_column("current")
+    for m in rows:
+        table.add_row(
+            str(m.get("id") or ""),
+            str(m.get("owned_by") or ""),
+            "yes" if m.get("current") else "",
+        )
+    console.print(table)
+    hint = info.get("switch_hint")
+    if hint:
+        console.print(f"[dim]{hint}[/dim]")
+
+
 def _print_memory_table(rows: list) -> None:
+    """Legacy table view (kept for optional use)."""
     if not rows:
         console.print("[dim]长久记忆为空（SQLite）。用 sun memory set 添加。[/dim]")
         return
@@ -440,6 +517,13 @@ def _print_memory_table(rows: list) -> None:
             (e.updated_at or "")[:19],
         )
     console.print(table)
+
+
+def _print_memory_dump(mem) -> None:
+    """Print full memory in the fixed 【】 / [] section layout."""
+    text = mem.format_dump()
+    console.print(text)
+    console.print(f"\n[dim]db → {mem.path}[/dim]")
 
 
 def _read_sun_prompt() -> str:
@@ -462,9 +546,9 @@ def _run_task(task: str | None) -> None:
             loop.run(task, session=False)
             return
         redis_hint = (
-            "[dim]/new · /sessions · /resume <id> · /memory · tokens · exit[/dim]"
+            "[dim]/new · /sessions · /resume <id> · /memory · /models · tokens · exit[/dim]"
             if loop.has_store()
-            else "[dim]/new · /memory · tokens · exit[/dim] "
+            else "[dim]/new · /memory · /models · tokens · exit[/dim] "
             "[dim yellow](set SUN_REDIS_URL for /resume)[/dim yellow]"
         )
         console.print(f"[bold]Sun[/bold] — interactive mode. {redis_hint}")
@@ -488,6 +572,9 @@ def _run_task(task: str | None) -> None:
             except SessionStoreError as exc:
                 console.print(f"[red]{exc}[/red]")
                 raise typer.Exit(1) from exc
+            if loop.should_quit_repl():
+                console.print("bye")
+                raise typer.Exit(0)
             ctx = loop.session_context()
             if ctx is not None:
                 n = ctx.token_estimate()
@@ -618,10 +705,10 @@ def memory(
         help="For show/delete: entry id. For set: unused.",
     ),
     kind: str = typer.Option(
-        "background",
+        "other",
         "--kind",
         "-k",
-        help=f"Entry kind: {', '.join(KINDS)}",
+        help=f"Entry kind: {', '.join(KINDS)}（系统提示词/铁律/开发环境/人格/项目背景/其他）",
     ),
     key: str = typer.Option("default", "--key", help="Slug within kind (unique)."),
     title: str = typer.Option("", "--title", "-t", help="Short title."),
@@ -630,7 +717,7 @@ def memory(
     ),
     content: str = typer.Option("", "--content", "-c", help="Inline content."),
 ) -> None:
-    """Manage SQLite durable memory (persona / rules / background / prompt).
+    """Manage SQLite durable memory (system/iron/dev_env/persona/project/other).
 
     Not cleared by sun sessions --prune. Deletes always require confirmation.
     """
@@ -639,8 +726,11 @@ def memory(
     act = action.strip().lower()
     try:
         if act == "list":
-            _print_memory_table(mem.list())
-            console.print(f"[dim]db → {mem.path}[/dim]")
+            if (target or "").strip().lower() in {"table", "--table"}:
+                _print_memory_table(mem.list())
+                console.print(f"[dim]db → {mem.path}[/dim]")
+            else:
+                _print_memory_dump(mem)
             return
 
         if act == "show":

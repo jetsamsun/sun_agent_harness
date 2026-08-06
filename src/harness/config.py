@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     """Key prefix for session keys in Redis."""
 
     sqlite_path: str = ""
-    """SQLite path for durable memory (persona/rules/background). Empty = ~/.config/sun/long_memory.db."""
+    """SQLite durable memory path. Empty = ./long_memory.db (project-local, like .env)."""
 
     # --- Observability (Stage 2⑥) ---
     streaming: bool = True

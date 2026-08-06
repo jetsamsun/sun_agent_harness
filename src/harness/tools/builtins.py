@@ -1018,9 +1018,458 @@ def finish(summary: str) -> dict:
     """Declare the task complete. Call this ONLY when the user's task is fully
     accomplished and verification is green (tests/syntax as applicable).
 
+    finish ends the current task turn and returns to the sun> prompt.
+    To leave the interactive REPL entirely (用户说退出/再见/quit), call
+    exit_repl instead — do not only say goodbye in text.
+
     :param summary: A short summary of the outcome for the user.
     """
     return {"success": True, "finished": True, "summary": summary}
+
+
+@registry.tool()
+def exit_repl(farewell: str = "") -> dict:
+    """Exit the interactive Sun REPL process. Use when the user asks to leave,
+    quit, 退出, 再见, bye, etc.
+
+    Do NOT use finish for that — finish only ends the current task and shows
+    sun> again. Prefer calling this tool over answering with text alone.
+
+    :param farewell: Optional short goodbye shown before the process exits.
+    """
+    text = (farewell or "").strip() or "已退出。"
+    return {
+        "success": True,
+        "quit_repl": True,
+        "finished": True,
+        "summary": text,
+    }
+
+
+@registry.tool()
+def session_search(
+    query: str = "",
+    session_id: str = "",
+    limit: int = 15,
+) -> dict:
+    """Search past Redis chat transcripts for this working directory.
+
+    Use when the user asks about prior conversations — e.g.「之前说过」「你还记得」
+    「什么秘密」「上回」「昨天聊了什么」— or anything that may live in chat
+    history but NOT in SQLite long memory. Do NOT rely on memory_list alone for
+    that; call this first (or as well).
+
+    Empty query returns recent user messages from recent sessions.
+    Requires SUN_REDIS_URL; otherwise reports unavailable.
+
+    :param query: Substring keywords (case-insensitive). Empty = recent user lines.
+    :param session_id: Optional session id to search only that transcript.
+    :param limit: Max matching snippets (1–40).
+    """
+    return _session_search_impl(query=query, session_id=session_id, limit=limit)
+
+
+@registry.tool()
+def list_models() -> dict:
+    """Report the currently configured Sun model and list models available on
+    the configured OpenAI-compatible endpoint (GET /models).
+
+    Use this immediately when the user asks which model is in use, what models
+    are available, or how to switch models. Do NOT probe env vars or .env via
+    run_shell / read_file for that question.
+
+    No parameters.
+    """
+    return fetch_model_status()
+
+
+@registry.tool()
+def memory_list(kind: str = "") -> dict:
+    """List durable memory and return a ready-to-show dump.
+
+    Trigger on natural language such as「看记忆库」「列出记忆」「记忆里有什么」.
+    Present the `formatted` field to the user AS-IS (never rewrite as a table).
+
+    Format of `formatted`:
+      【系统提示词】… / [开发环境]… / 【铁律】… / 【人格】… / 【项目背景】… / 【其他】…
+
+    Kinds: system, iron, dev_env, persona, project, other (Chinese labels ok).
+    Omit kind to dump all sections.
+
+    :param kind: Optional kind filter (English key or Chinese label).
+    """
+    from ..long_memory import LongMemoryError, open_long_memory
+
+    mem = open_long_memory(_SQLITE_PATH[0])
+    try:
+        try:
+            k = kind.strip() or None
+            entries = mem.list(kind=k)
+            formatted = mem.format_dump(kind=k)
+        except LongMemoryError as exc:
+            return {"success": False, "error": str(exc), "kinds": list(_memory_kinds())}
+        return {
+            "success": True,
+            "db": str(mem.path),
+            "kinds": _memory_kinds(),
+            "count": len(entries),
+            "formatted": formatted,
+            "entries": [
+                {
+                    "id": e.id,
+                    "kind": e.kind,
+                    "kind_label": e.as_dict()["kind_label"],
+                    "key": e.key,
+                    "title": e.title,
+                    "updated_at": e.updated_at,
+                    "content": e.content,
+                }
+                for e in entries
+            ],
+        }
+    finally:
+        mem.close()
+
+
+@registry.tool()
+def memory_get(entry_id: int = 0, kind: str = "", key: str = "") -> dict:
+    """Get one durable memory entry by id, or by kind+key.
+
+    Use for natural language like「我的人格写了什么」「看一下铁律」.
+
+    :param entry_id: Numeric id from memory_list (preferred).
+    :param kind: Kind when looking up by key (system/iron/dev_env/persona/project/other).
+    :param key: Key within kind (default is often \"default\").
+    """
+    from ..long_memory import LongMemoryError, open_long_memory
+
+    mem = open_long_memory(_SQLITE_PATH[0])
+    try:
+        try:
+            if entry_id and int(entry_id) > 0:
+                entry = mem.get(int(entry_id))
+            elif kind.strip() and key.strip():
+                entry = mem.get_by_key(kind, key)
+            elif kind.strip():
+                entry = mem.get_by_key(kind, "default")
+            else:
+                return {
+                    "success": False,
+                    "error": "Provide entry_id, or kind (+ optional key)",
+                }
+        except LongMemoryError as exc:
+            return {"success": False, "error": str(exc)}
+        if entry is None:
+            return {"success": False, "error": "not found"}
+        return {"success": True, "db": str(mem.path), "entry": entry.as_dict()}
+    finally:
+        mem.close()
+
+
+@registry.tool()
+def memory_upsert(
+    kind: str,
+    content: str,
+    key: str = "default",
+    title: str = "",
+) -> dict:
+    """Create or update a durable memory entry (SQLite).
+
+    Use for natural language like「记住…」「加一条铁律…」「更新人格为…」.
+    Kinds: system / iron / dev_env / persona / project / other (Chinese labels also ok).
+    Changes apply to the next task's system prompt (current turn already loaded).
+
+    :param kind: Memory category.
+    :param content: Full text to store (non-empty).
+    :param key: Slug within kind; unique per kind. Default \"default\".
+    :param title: Optional short title.
+    """
+    from ..long_memory import LongMemoryError, open_long_memory
+
+    mem = open_long_memory(_SQLITE_PATH[0])
+    try:
+        try:
+            entry = mem.upsert(kind=kind, key=key, content=content, title=title)
+        except LongMemoryError as exc:
+            return {"success": False, "error": str(exc), "kinds": list(_memory_kinds())}
+        return {
+            "success": True,
+            "db": str(mem.path),
+            "entry": entry.as_dict(),
+            "note": "已保存；下一轮任务组装 system prompt 时生效。",
+        }
+    finally:
+        mem.close()
+
+
+@registry.tool(dangerous=True)
+def memory_delete(entry_id: int) -> dict:
+    """Delete one durable memory entry by id. Requires user confirmation.
+
+    Use for natural language like「删掉某条记忆」; list/get first if id unknown.
+    Does not affect Redis chat sessions.
+
+    :param entry_id: Entry id to delete.
+    """
+    from ..long_memory import open_long_memory
+
+    eid = int(entry_id)
+    mem = open_long_memory(_SQLITE_PATH[0])
+    try:
+        entry = mem.get(eid)
+        if entry is None:
+            return {"success": False, "error": f"not found id={eid}"}
+        ok = mem.delete(eid)
+        return {
+            "success": ok,
+            "deleted_id": eid,
+            "deleted": entry.as_dict() if ok else None,
+            "db": str(mem.path),
+        }
+    finally:
+        mem.close()
+
+
+def _memory_kinds() -> list[dict[str, str]]:
+    from ..long_memory import KINDS, _KIND_LABELS
+
+    return [{"kind": k, "label": _KIND_LABELS[k]} for k in KINDS]
+
+
+# LLM connection snapshot for tools that need base_url / api_key / model.
+_LLM_CONFIG: dict[str, str] = {"api_key": "", "base_url": "", "model": ""}
+# SQLite path for memory_* tools (empty = project ./long_memory.db).
+_SQLITE_PATH = [""]
+# Redis SessionStore for session_search (None = Redis not configured).
+_SESSION_STORE: list[Any] = [None]
+
+_SESSION_SEARCH_EXCERPT = 420
+_SESSION_SEARCH_MAX_SESSIONS = 40
+
+
+def set_llm_config(*, api_key: str, base_url: str, model: str) -> None:
+    """Inject current Settings into tools (called from CLI bootstrap)."""
+    _LLM_CONFIG["api_key"] = api_key or ""
+    _LLM_CONFIG["base_url"] = (base_url or "").rstrip("/")
+    _LLM_CONFIG["model"] = model or ""
+
+
+def set_sqlite_path(path: str) -> None:
+    """Inject SUN_SQLITE_PATH (or empty for default) into memory_* tools."""
+    _SQLITE_PATH[0] = (path or "").strip()
+
+
+def set_session_store(store: Any | None) -> None:
+    """Inject Redis SessionStore (or None) for session_search."""
+    _SESSION_STORE[0] = store
+
+
+def _transcript_line_text(msg: dict[str, Any]) -> str:
+    """Plain text from a transcript message; skip tool/system noise."""
+    role = str(msg.get("role") or "")
+    if role in {"system", "tool"}:
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        text = content.strip()
+        if text:
+            return text
+    return ""
+
+
+def _session_search_impl(
+    *,
+    query: str = "",
+    session_id: str = "",
+    limit: int = 15,
+) -> dict[str, Any]:
+    store = _SESSION_STORE[0]
+    if store is None:
+        return {
+            "success": False,
+            "error": "Redis session store unavailable (set SUN_REDIS_URL to search chat history).",
+            "matches": [],
+            "count": 0,
+        }
+    q = (query or "").strip()
+    sid_filter = (session_id or "").strip()
+    try:
+        lim = max(1, min(int(limit or 15), 40))
+    except (TypeError, ValueError):
+        lim = 15
+
+    cwd = str(Path.cwd().resolve())
+    try:
+        if sid_filter:
+            meta = store.get_meta(sid_filter)
+            if meta is None:
+                return {
+                    "success": False,
+                    "error": f"session not found: {sid_filter}",
+                    "matches": [],
+                    "count": 0,
+                }
+            if meta.cwd != cwd:
+                return {
+                    "success": False,
+                    "error": (
+                        f"session {sid_filter} belongs to another cwd "
+                        f"({meta.cwd}); cd there or omit session_id."
+                    ),
+                    "matches": [],
+                    "count": 0,
+                }
+            sessions = [meta]
+        else:
+            sessions = store.list_sessions(cwd=cwd, limit=_SESSION_SEARCH_MAX_SESSIONS)
+    except Exception as exc:  # noqa: BLE001 — surface Redis errors to model
+        return {
+            "success": False,
+            "error": f"session search failed: {exc}",
+            "matches": [],
+            "count": 0,
+        }
+
+    q_low = q.lower()
+    matches: list[dict[str, Any]] = []
+    sessions_scanned = 0
+
+    for meta in sessions:
+        sessions_scanned += 1
+        try:
+            transcript = store.get_transcript(meta.id)
+        except Exception:  # noqa: BLE001
+            continue
+        for idx, msg in enumerate(transcript):
+            role = str(msg.get("role") or "")
+            text = _transcript_line_text(msg if isinstance(msg, dict) else {})
+            if not text:
+                continue
+            if q:
+                if q_low not in text.lower() and q not in text:
+                    continue
+            elif role != "user":
+                # Empty query: recent user lines only.
+                continue
+            excerpt = text if len(text) <= _SESSION_SEARCH_EXCERPT else (
+                text[: _SESSION_SEARCH_EXCERPT - 1] + "…"
+            )
+            matches.append(
+                {
+                    "session_id": meta.id,
+                    "title": meta.title,
+                    "updated_at": meta.updated_at,
+                    "status": meta.status,
+                    "role": role,
+                    "index": idx,
+                    "excerpt": excerpt,
+                }
+            )
+            if len(matches) >= lim:
+                break
+        if len(matches) >= lim:
+            break
+
+    # Empty query: prefer newest first (list_sessions already newest-first;
+    # within a session we walked top-to-bottom — reverse for "recent").
+    if not q and matches:
+        matches = list(reversed(matches))[:lim]
+
+    hint = (
+        "Matches are from Redis chat transcripts for this cwd. "
+        "Long-term SQLite memory is separate (memory_list)."
+    )
+    if not matches and q:
+        hint += " No keyword hits; try broader query or empty query for recent user lines."
+
+    return {
+        "success": True,
+        "query": q,
+        "cwd": cwd,
+        "sessions_scanned": sessions_scanned,
+        "count": len(matches),
+        "matches": matches,
+        "hint": hint,
+    }
+
+
+def fetch_model_status(*, timeout_s: float = 15.0) -> dict[str, Any]:
+    """Return current model + /v1/models listing (shared by tool and /models)."""
+    api_key = _LLM_CONFIG.get("api_key", "")
+    base_url = _LLM_CONFIG.get("base_url", "").rstrip("/")
+    current = _LLM_CONFIG.get("model", "")
+    out: dict[str, Any] = {
+        "success": True,
+        "current_model": current,
+        "base_url": base_url,
+        "available_models": [],
+        "count": 0,
+        "switch_hint": "修改 .env 或 ~/.config/sun/config.toml 的 SUN_MODEL（或 sun model），下一轮生效。",
+    }
+    if not base_url:
+        out["success"] = False
+        out["error"] = "base_url not configured"
+        return out
+    if not api_key:
+        out["success"] = False
+        out["error"] = "api_key not configured"
+        return out
+
+    url = f"{base_url}/models"
+    req = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": _FETCH_USER_AGENT,
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read(512_000).decode("utf-8", errors="replace")
+        payload = json.loads(raw)
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:400]
+        except Exception:  # noqa: BLE001
+            detail = str(exc)
+        out["success"] = False
+        out["error"] = f"HTTP {exc.code}: {detail or exc.reason}"
+        return out
+    except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        out["success"] = False
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        out["success"] = False
+        out["error"] = "unexpected /models response shape"
+        out["raw_keys"] = list(payload.keys()) if isinstance(payload, dict) else []
+        return out
+
+    models: list[dict[str, Any]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        entry: dict[str, Any] = {
+            "id": mid,
+            "owned_by": item.get("owned_by") or "",
+            "current": mid == current,
+        }
+        endpoints = item.get("supported_endpoint_types")
+        if endpoints:
+            entry["supported_endpoint_types"] = endpoints
+        models.append(entry)
+    models.sort(key=lambda m: (not m["current"], m["id"]))
+    out["available_models"] = models
+    out["count"] = len(models)
+    return out
 
 
 def set_ask_fn(fn: AskFn | None) -> None:

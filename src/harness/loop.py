@@ -25,7 +25,7 @@ from typing import Any
 from .config import Settings
 from .context import Context
 from .llm import LLMClient
-from .long_memory import load_durable_block, open_long_memory
+from .long_memory import DEFAULT_SYSTEM_PROMPT, open_long_memory
 from .persona import (
     DEFAULT_PERSONA,
     load_persona_block,
@@ -42,64 +42,8 @@ from .tools.executor import ToolExecutor
 from .tools.registry import ToolRegistry
 from .usage import UsageTotals
 
-# Base rules (Chinese). Runtime OS + editable persona appended via build_system_prompt().
-SYSTEM_PROMPT_BASE = """你是 Sun，运行在用户本机上的自主编程助手。
-请用中文与用户沟通（除非用户要求其他语言）。
-语气与偏好以「长久记忆 / 人格」段为准（SQLite 长久记忆 + 可选 PERSONA.md）；
-与下列硬性规则冲突时以硬性规则为准。
-聊天记录在 Redis（可 /sessions prune）；人设/规则/背景在 SQLite（不会被 prune 清掉）。
-
-通过调用工具完成任务。按小步推进：观察 → 行动 → 根据工具真实输出再决策。
-不要编造命令结果。
-
-## 环境规则（必须遵守）
-- 每条任务开始时，系统会注入「当前运行环境」；命令与路径必须按该环境选择，不要默认当成 Linux。
-- Windows：`run_shell` 通常走 cmd。禁止使用交互式 `date` / `time`（会挂起直到超时）。
-  查日期时间用 `python -c "..."` 或 `powershell -NoProfile -Command "Get-Date ..."`。
-  路径可用反斜杠或正斜杠；不要假设有 bash/`grep`/`head` 等 Unix 工具（可用 Python 代替）。
-- Linux/macOS：可用常见 Unix 命令；仍优先用专用工具而非巨型 shell 脚本。
-
-## 编码规则
-- 改代码前先用 list_dir / find_files / search_files 探索。
-- 改已有文件优先 edit_file；新建或整文件重写才用 write_file。
-- edit_file 前先 read_file 相关片段，保证 old_text 只匹配一次；失败则重读再试，禁止盲目整文件覆盖。
-- 大文件用 read_file 的 offset/limit，不要一次读完全文。
-- 写入限制在 workspace 内；编辑可能弹出 diff 确认。任务内首次改文件可能自动 git checkpoint；
-  改坏了可用 git_rollback；用户要求保存时再 git_commit。
-
-## 验证规则（不可跳过）
-- 改完源码后对文件 check_syntax。
-- 有测试则 run_tests；失败则修复再测直到通过。可选 run_lint。
-- 上次 run_tests 未通过时不要 finish（系统会拒绝）。
-- 只能根据工具输出宣称成功，禁止凭空断言。
-
-## 规划规则（多步/含糊任务）
-- 需求不清时先 ask_user。
-- 非琐碎任务先 propose_plan（含步骤与验收标准），等 approved=true 再大改。
-- 批准后用 todo_write 跟踪；同时最多一个 in_progress。
-- 简单问答、单次事实查询可跳过 propose_plan。
-
-## 一般规则
-- 没有专用工具时再用 run_shell。
-- 读网页 / 抓公开页面内容用 fetch_url（会抽成可读文本），不要 curl 落盘或写临时脚本。
-  fetch_url 不执行 JavaScript；强依赖前端渲染的页面可能内容不全。
-- 网页规则（省次数）：
-  1) 会话历史或先前 tool 结果已够回答时，禁止再抓。
-  2) 不确定确切 URL 时：先 search_web 一次，再对最佳结果 fetch_url 一次；
-     禁止连猜多个路径变体（如 /guides/foo、/guides/using_foo、/api/foo）。
-  3) 同一 URL 进程内约 15 分钟会复用缓存（cached=true）；不要为「再确认」重复 fetch。
-- 交互 REPL 中保留历史，不要让用户重复已说过的事实。
-- 优先用一次性命令（如 `python -c`）完成本地查询，避免为小事落盘脚本。
-- 删除文件/目录一律需要用户确认（系统会对 rm/del/Remove-Item/os.remove 等弹确认）。
-  禁止设法绕过确认；用户拒绝则停止删除并说明。
-- 若任务中创建了临时文件（如 `_weather.py`、`weather*.txt`、`tmp_*`、仅用于调试的草稿），
-  必须在 finish 之前删除它们（Windows: `del` / `Remove-Item`；Unix: `rm`），并等待确认通过。
-  不要删除用户原有项目文件、`.git`、配置或测试夹具；只清本任务产生的临时产物。
-- 任务完成且验证通过、临时文件已清理后，再调用 finish，摘要简洁。
-- 不可能或不安全时用 finish 说明原因，不要猜。
-- 长任务中系统可能把较早轮次压成「先前对话摘要」；请信任摘要并继续，
-  需要细节时再 read_file / 搜索，不要要求用户重复已说过的目标。
-"""
+# Kept as alias for tests / docs; live prompt is seeded into SQLite `system/default`.
+SYSTEM_PROMPT_BASE = DEFAULT_SYSTEM_PROMPT
 
 
 def detect_runtime_env() -> dict[str, str]:
@@ -139,10 +83,9 @@ def build_system_prompt(
     persona_path: str = "",
     sqlite_path: str = "",
 ) -> str:
-    """SYSTEM_PROMPT_BASE + env + SQLite durable memory (+ PERSONA.md fallback)."""
+    """Assemble prompt from SQLite memory + live runtime env (+ PERSONA.md fallback)."""
     info = env or detect_runtime_env()
-    env_block = f"""
-## 当前运行环境（本任务启动时检测，请严格按此选择命令）
+    env_block = f"""## 当前运行环境（本任务启动时检测，请严格按此选择命令）
 - 系统族: {info["family"]}（platform.system={info["system"]}）
 - 版本/架构: {info["release"]} / {info["machine"]}
 - Python: {info["python"]}
@@ -151,30 +94,31 @@ def build_system_prompt(
 - Shell: {info["shell_hint"]}
 - 日期时间: {info["date_hint"]}
 """
-    # Seed SQLite persona once from PERSONA.md / default template.
     try:
         mem = open_long_memory(sqlite_path)
         try:
+            file_text = ""
             if not mem.has_kind("persona"):
                 file_text = load_persona_text(resolve_persona_path(persona_path))
-                mem.seed_persona_if_empty(file_text or DEFAULT_PERSONA)
+            mem.seed_defaults(
+                persona_text=file_text or DEFAULT_PERSONA,
+                system_text=DEFAULT_SYSTEM_PROMPT,
+            )
+            durable_block = mem.render_prompt_block(runtime_env_block=env_block)
+            has_persona = mem.has_kind("persona")
         finally:
             mem.close()
     except OSError:
-        pass
+        # Fallback if DB unavailable: baked-in system prompt + live env.
+        return DEFAULT_SYSTEM_PROMPT.rstrip() + "\n\n" + env_block
 
-    durable_block, _db, has_persona = load_durable_block(sqlite_path)
-    # File PERSONA.md only if SQLite has no persona rows (compat / override path).
     persona_block = ""
     if not has_persona:
         persona_block, _ = load_persona_block(persona_path)
-    return (
-        SYSTEM_PROMPT_BASE.rstrip()
-        + "\n"
-        + env_block
-        + durable_block
-        + persona_block
-    )
+    if durable_block.strip():
+        return durable_block.rstrip() + persona_block
+    # Empty DB edge case
+    return DEFAULT_SYSTEM_PROMPT.rstrip() + "\n\n" + env_block + persona_block
 
 
 @dataclass
@@ -212,6 +156,12 @@ class AgentLoop:
         self._session_created_at: str | None = None
         # Full append-only log (never compressed); Redis transcript source.
         self._transcript: list[dict[str, Any]] = []
+        # Set when exit_repl tool succeeds; REPL should terminate the process.
+        self._quit_repl = False
+
+    def should_quit_repl(self) -> bool:
+        """True after the model called exit_repl successfully this process."""
+        return self._quit_repl
 
     def clear_session(self) -> None:
         """Drop REPL history and planning state (todos / plan approvals)."""
@@ -471,6 +421,9 @@ class AgentLoop:
                                 "content": tool_payload,
                             }
                         )
+
+                    if result.get("quit_repl"):
+                        self._quit_repl = True
 
                     if result.get("finished"):
                         summary = result.get("summary", "")

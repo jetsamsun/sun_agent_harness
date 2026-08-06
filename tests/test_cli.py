@@ -120,3 +120,12 @@ def test_known_command_not_rerouted(isolated_config, monkeypatch):
     with pytest.raises(SystemExit):
         m.main()
     assert m.sys.argv[1] == "version"  # unchanged
+
+
+def test_repl_exit_phrases():
+    from harness.__main__ import _is_repl_exit
+
+    for phrase in ("exit", "quit", "/quit", "bye", "退出", "退出 sun", "退出sun", "再见"):
+        assert _is_repl_exit(phrase), phrase
+    for phrase in ("退出一下吧", "帮我退出", "写个退出脚本", ""):
+        assert not _is_repl_exit(phrase), phrase

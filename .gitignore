@@ -6,8 +6,10 @@ __pycache__/
 dist/
 build/
 
-# Env / secrets
+# Env / secrets / durable memory (machine-local; copy with .env on new machines)
 .env
+long_memory.db
+long_memory.db-*
 
 # Test / cache
 .pytest_cache/

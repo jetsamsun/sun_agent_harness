@@ -45,6 +45,8 @@ def test_all_builtin_tools_registered():
         "git_rollback",
         "git_commit",
         "finish",
+        "exit_repl",
+        "session_search",
     } <= names
 
 
@@ -222,6 +224,15 @@ def test_finish_tool_signals_completion():
     assert result["summary"] == "done"
 
 
+def test_exit_repl_tool_signals_quit():
+    settings = Settings(require_confirmation=False)
+    ex = ToolExecutor(registry, settings)
+    result = ex.execute("exit_repl", '{"farewell": "再见"}')
+    assert result["quit_repl"] is True
+    assert result["finished"] is True
+    assert result["summary"] == "再见"
+
+
 def test_check_syntax_python(tmp_path):
     settings = Settings(require_confirmation=False)
     ex = ToolExecutor(registry, settings)
@@ -355,6 +366,29 @@ def test_loop_refuses_finish_while_tests_red(monkeypatch):
     out = loop.run("task")
     assert calls["n"] >= 3
     assert out != "done anyway"
+
+
+def test_loop_exit_repl_sets_quit_flag(monkeypatch):
+    from harness.config import Settings
+    from harness.llm import LLMClient
+    from harness.loop import AgentLoop
+
+    _, _TC, _Msg = _fake_msg_classes()
+    settings = Settings(
+        api_key="x", max_turns=2, require_confirmation=False, streaming=False
+    )
+    ex = ToolExecutor(registry, settings)
+    client = LLMClient(settings)
+
+    def fake_chat(_messages, tools=None, on_delta=None):
+        return _as_chat(_Msg([_TC("1", "exit_repl", '{"farewell": "再见"}')]))
+
+    monkeypatch.setattr(client, "chat", fake_chat)
+    loop = AgentLoop(client, registry, ex, settings)
+    assert loop.should_quit_repl() is False
+    out = loop.run("退出 sun", session=True)
+    assert out == "再见"
+    assert loop.should_quit_repl() is True
 
 
 def test_session_reuses_context_across_runs(monkeypatch):

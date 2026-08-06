@@ -49,6 +49,9 @@ def test_all_builtin_tools_registered():
         "session_search",
         "secret_vault_search",
         "secret_vault_get",
+        "browser_open",
+        "browser_snapshot",
+        "analyze_image",
     } <= names
 
 

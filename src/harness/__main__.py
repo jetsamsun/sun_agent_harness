@@ -52,6 +52,7 @@ from .tools import (
     set_edit_confirm_fn,
     set_llm_config,
     set_plan_confirm_fn,
+    set_browser_config,
     set_secret_vault_config,
     set_session_store,
     set_shell_timeout,
@@ -303,11 +304,18 @@ def _build_loop() -> tuple[AgentLoop, TraceSink | None]:
         api_key=settings.api_key,
         base_url=settings.base_url,
         model=settings.model,
+        vision_model=settings.vision_model,
     )
     set_sqlite_path(settings.sqlite_path)
     set_secret_vault_config(
         url=settings.secret_vault_url,
         token=settings.secret_vault_token,
+    )
+    set_browser_config(
+        enabled=settings.browser_enabled,
+        headless=settings.browser_headless,
+        timeout_ms=settings.browser_timeout_ms,
+        screenshot_dir=settings.browser_screenshot_dir,
     )
     set_auto_git_checkpoint(settings.auto_git_checkpoint)
     set_ask_fn(_make_ask_fn())
@@ -467,6 +475,7 @@ def _repl_handle_line(loop: AgentLoop, line: str) -> bool:
             api_key=settings.api_key,
             base_url=settings.base_url,
             model=settings.model,
+            vision_model=settings.vision_model,
         )
         _print_models_status(fetch_model_status())
         return True

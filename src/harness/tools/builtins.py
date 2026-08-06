@@ -4,6 +4,7 @@ registry instance.
 
 from __future__ import annotations
 
+import base64
 import fnmatch
 import json
 import os
@@ -20,6 +21,7 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from .. import gitops
+from ..browser_session import close_browser
 from ..workspace import resolve_in_workspace, unified_diff
 from .registry import ToolRegistry
 
@@ -1113,6 +1115,20 @@ def list_models() -> dict:
 
 
 @registry.tool()
+def analyze_image(path: str = "", url: str = "", question: str = "") -> dict:
+    """Analyze a local image or http(s) image URL with the vision model.
+
+    Use for screenshots, UI mockups, error dialogs, or when browser_screenshot
+    analyze=true. Prefer workspace-local paths from browser_screenshot.
+
+    :param path: Local image path (png/jpg/webp/gif); workspace-relative ok.
+    :param url: Optional http(s) image URL (alternative to path).
+    :param question: What to answer about the image (default: describe UI/errors).
+    """
+    return _analyze_image_impl(path=path, url=url, question=question)
+
+
+@registry.tool()
 def memory_list(kind: str = "") -> dict:
     """List durable memory and return a ready-to-show dump.
 
@@ -1276,23 +1292,43 @@ def _memory_kinds() -> list[dict[str, str]]:
 
 
 # LLM connection snapshot for tools that need base_url / api_key / model.
-_LLM_CONFIG: dict[str, str] = {"api_key": "", "base_url": "", "model": ""}
+_LLM_CONFIG: dict[str, str] = {
+    "api_key": "",
+    "base_url": "",
+    "model": "",
+    "vision_model": "",
+}
 # SQLite path for memory_* tools (empty = project ./long_memory.db).
 _SQLITE_PATH = [""]
 # Redis SessionStore for session_search (None = Redis not configured).
 _SESSION_STORE: list[Any] = [None]
 # Dawnsight secret vault (mqeng.com).
 _SECRET_VAULT: dict[str, str] = {"url": "https://mqeng.com", "token": ""}
+_VISION_MAX_BYTES = 4_000_000
+_VISION_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 
 _SESSION_SEARCH_EXCERPT = 420
 _SESSION_SEARCH_MAX_SESSIONS = 40
 
 
-def set_llm_config(*, api_key: str, base_url: str, model: str) -> None:
+def set_llm_config(
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+    vision_model: str = "",
+) -> None:
     """Inject current Settings into tools (called from CLI bootstrap)."""
     _LLM_CONFIG["api_key"] = api_key or ""
     _LLM_CONFIG["base_url"] = (base_url or "").rstrip("/")
     _LLM_CONFIG["model"] = model or ""
+    _LLM_CONFIG["vision_model"] = (vision_model or "").strip()
 
 
 def set_sqlite_path(path: str) -> None:
@@ -1684,6 +1720,141 @@ def reset_planning_state() -> None:
     _TODOS = []
     _PLAN = None
     gitops.reset_git_state()
+    # Keep browser open across multi-turn REPL tasks; only /new clears via
+    # clear_session → reset_planning_state. Closing here would break login flows.
+    # Browser is closed explicitly by browser_close or process exit.
+
+
+def reset_browser_on_new_session() -> None:
+    """Close browser when user starts a fresh REPL session (/new)."""
+    close_browser()
+
+
+def _analyze_image_impl(
+    *,
+    path: str = "",
+    url: str = "",
+    question: str = "",
+) -> dict[str, Any]:
+    api_key = _LLM_CONFIG.get("api_key", "")
+    base_url = (_LLM_CONFIG.get("base_url") or "").rstrip("/")
+    vision_model = (
+        _LLM_CONFIG.get("vision_model") or _LLM_CONFIG.get("model") or ""
+    ).strip()
+    q = (question or "").strip() or (
+        "用中文描述这张图：界面状态、关键文案、是否登录成功、有无报错。"
+    )
+    if not api_key or not base_url:
+        return {"success": False, "error": "LLM api_key/base_url not configured"}
+    if not vision_model:
+        return {
+            "success": False,
+            "error": "No vision model. Set SUN_VISION_MODEL (or SUN_MODEL).",
+        }
+
+    image_url = ""
+    source = ""
+    p = (path or "").strip()
+    u = (url or "").strip()
+    if p:
+        resolved, err = resolve_in_workspace(p)
+        if err or resolved is None:
+            return {"success": False, "error": err or "invalid path"}
+        if not resolved.is_file():
+            return {"success": False, "error": f"No such file: {resolved}"}
+        suffix = resolved.suffix.lower()
+        mime = _VISION_MIME.get(suffix)
+        if not mime:
+            return {
+                "success": False,
+                "error": f"Unsupported image type {suffix}; use png/jpg/webp/gif",
+            }
+        raw = resolved.read_bytes()
+        if len(raw) > _VISION_MAX_BYTES:
+            return {
+                "success": False,
+                "error": f"Image too large (>{_VISION_MAX_BYTES} bytes)",
+            }
+        b64 = base64.standard_b64encode(raw).decode("ascii")
+        image_url = f"data:{mime};base64,{b64}"
+        source = str(resolved)
+    elif u.startswith(("http://", "https://")):
+        image_url = u
+        source = u
+    else:
+        return {"success": False, "error": "Provide path or http(s) url"}
+
+    endpoint = f"{base_url}/chat/completions"
+    payload = {
+        "model": vision_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": q},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            }
+        ],
+        "temperature": 0.0,
+        "max_tokens": 1200,
+    }
+    req = Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": _FETCH_USER_AGENT,
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=90) as resp:  # noqa: S310
+            body = resp.read(512_000).decode("utf-8", errors="replace")
+            status = getattr(resp, "status", None) or resp.getcode()
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read(800).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "error": f"Vision HTTP {exc.code}: {exc.reason}",
+            "detail": detail[:400],
+            "model": vision_model,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": str(exc), "model": vision_model}
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return {
+            "success": False,
+            "error": "Vision response not JSON",
+            "preview": body[:300],
+        }
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        err = data.get("error") if isinstance(data, dict) else None
+        return {
+            "success": False,
+            "error": str(err or "unexpected vision response"),
+            "model": vision_model,
+            "status": int(status) if status else 0,
+        }
+    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    return {
+        "success": True,
+        "model": vision_model,
+        "source": source,
+        "question": q,
+        "analysis": text.strip(),
+    }
 
 
 def export_planning_state() -> dict[str, Any]:

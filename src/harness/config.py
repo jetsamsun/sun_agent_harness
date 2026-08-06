@@ -135,6 +135,23 @@ class Settings(BaseSettings):
     secret_vault_token: str = ""
     """API token for X-Secret-Vault-Token. From SUN_SECRET_VAULT_TOKEN; never log it."""
 
+    # --- Browser (Playwright; optional extra) ---
+    browser_enabled: bool = True
+    """Allow browser_* tools. Requires: uv sync --extra browser && playwright install chromium."""
+
+    browser_headless: bool = False
+    """False = headed (visible) Chromium; True = headless."""
+
+    browser_timeout_ms: int = 30_000
+    """Default Playwright timeout for navigation / waits."""
+
+    browser_screenshot_dir: str = ""
+    """Screenshot directory. Empty = ./.sun/screenshots."""
+
+    # --- Vision ---
+    vision_model: str = ""
+    """Multimodal model for analyze_image. Empty = fall back to SUN_MODEL."""
+
     # --- Observability (Stage 2⑥) ---
     streaming: bool = True
     """Stream assistant text deltas to the CLI while the model thinks."""

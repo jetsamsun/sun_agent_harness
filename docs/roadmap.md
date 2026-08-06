@@ -24,7 +24,7 @@
 | **会话/项目记忆** | 跨轮不忘；跨天/跨进程可续 | Stage 2④ → Stage 3③ | ✅ Redis 聊天（可 prune）+ SQLite 长久记忆（人设/规则/背景） |
 | **多模型分责** | 规划/编码/审查等用不同模型 | Stage 2.5 薄路由 → Stage 3①② | 单 model |
 | **外接工具** | MCP / 插件 | Stage 3④ | 无（ZCode 侧可另用） |
-| **图片视觉理解** | 读本地/URL 图片并描述、答问（多模态） | Stage 3⑤ | ⬜ 未做 |
+| **图片视觉理解** | 读本地/URL 图片并描述、答问（多模态） | Stage 3⑤ | ✅ `analyze_image` + screenshot analyze |
 
 学习二阶段（吃透 Stage 1 内核）完成前，**产品大项不抢跑**。
 
@@ -196,16 +196,21 @@ streaming · context compression (in-memory only for now).
 
 ### ⑤ 图片视觉理解（多模态）
 终端里看图、读截图/设计稿/报错图，再结合文字任务回答或改代码。
-- [ ] 配置：多模态 endpoint / model（可与主编码模型分离，如 `SUN_VISION_MODEL`）
-- [ ] 工具：`analyze_image`（本地路径优先；可选 http(s) URL）→ 返回描述/OCR 要点/对用户问题的回答
-- [ ] 消息形态：把图片以 API 要求的 image 内容块交给视觉模型（不整图永久塞进主 Context；摘要进会话）
-- [ ] 安全：仅 workspace 内路径；体积/分辨率上限；无视觉模型时明确报错
-- [ ] REPL 体验：用户可贴路径或「看这张图：…」由 agent 调工具
+- [x] 配置：`SUN_VISION_MODEL`（空则回退主模型；与主编码可分离）
+- [x] 工具：`analyze_image`（本地路径优先；可选 http(s) URL）
+- [x] 消息形态：vision chat completions（base64 data URL）；摘要进 tool_result
+- [x] 安全：workspace 路径；体积上限；未配置时报错
+- [x] 与浏览器：`browser_screenshot(analyze=true)` 串联
 
 ### Stage 3 验收（多模型主闭环 DoD）
 > 模糊需求 → 澄清 → 拆步 → **planner 模型出计划** → **coder 模型改代码** → 跑测自修 → **reviewer 模型看一眼** → 项目记忆留下约定 → finish。
 
 视觉能力另验：给一张 UI/报错截图路径 → `analyze_image` → 结合结论改代码或回答问题。
 
+### 浏览器与视觉（已开薄能力）
+- [x] Playwright 浏览器工具：`browser_open/snapshot/click/fill/press/wait/screenshot/close`（optional extra）
+- [x] `analyze_image` 多模态读图（`SUN_VISION_MODEL`）
+- [ ] 保登录态 user-data-dir / 更稳的选择器策略（按需）
+
 ### 刻意靠后（有需要再开）
-- Web/browser 自动化 · GUI · 云端多租户
+- GUI · 云端多租户

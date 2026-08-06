@@ -36,6 +36,7 @@ from .session_store import SessionMeta, SessionStore, SessionStoreError, new_ses
 from .tools.builtins import (
     export_planning_state,
     import_planning_state,
+    reset_browser_on_new_session,
     reset_planning_state,
 )
 from .tools.executor import ToolExecutor
@@ -172,6 +173,7 @@ class AgentLoop:
         self._session_created_at = None
         self._transcript = []
         reset_planning_state()
+        reset_browser_on_new_session()
         self._session_usage = UsageTotals(model=self._settings.model)
 
     def session_context(self) -> Context | None:

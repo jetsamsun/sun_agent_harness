@@ -151,15 +151,20 @@ def _make_event_printer(*, show_usage: bool = True):
             ok = result.get("success")
             marker = "[green]OK[/green]" if ok else "[red]ERR[/red]"
             preview = (
-                result.get("stdout")
+                result.get("analysis")
+                or result.get("formatted")
+                or result.get("stdout")
                 or result.get("content")
+                or result.get("text")
                 or result.get("error")
                 or result.get("summary")
                 or ""
             )
             preview = str(preview).strip()
-            if len(preview) > 500:
-                preview = preview[:500] + " ..."
+            # Vision answers are the deliverable — show more than a generic OK.
+            limit = 2000 if result.get("analysis") else 500
+            if len(preview) > limit:
+                preview = preview[:limit] + " ..."
             ms = event.data.get("latency_ms")
             timing = f" [dim]({ms}ms)[/dim]" if ms is not None else ""
             _cprint(f"  {marker} [dim]{preview}[/dim]{timing}")

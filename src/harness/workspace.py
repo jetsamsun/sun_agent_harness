@@ -46,6 +46,27 @@ def resolve_in_workspace(path: str) -> tuple[Path | None, str | None]:
     return resolved, None
 
 
+def resolve_existing_file(path: str, *, allow_outside_workspace: bool = False) -> tuple[Path | None, str | None]:
+    """Resolve a path that must exist as a file.
+
+    When ``allow_outside_workspace`` is True (read-only tools like analyze_image),
+    absolute paths outside the workspace are allowed if the file exists.
+    """
+    if allow_outside_workspace:
+        raw = Path(path).expanduser()
+        root = _WORKSPACE_ROOT[0]
+        if raw.is_absolute():
+            resolved = raw.resolve()
+        elif root is not None:
+            resolved = (root / raw).resolve()
+        else:
+            resolved = (Path.cwd() / raw).resolve()
+        if not resolved.is_file():
+            return None, f"No such file: {path}"
+        return resolved, None
+    return resolve_in_workspace(path)
+
+
 def unified_diff(path: str | Path, old: str, new: str, *, max_lines: int = 200) -> str:
     """Return a unified diff string (possibly truncated)."""
     label = str(path)

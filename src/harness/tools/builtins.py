@@ -22,7 +22,7 @@ from urllib.request import Request, urlopen
 
 from .. import gitops
 from ..browser_session import close_browser
-from ..workspace import resolve_in_workspace, unified_diff
+from ..workspace import resolve_existing_file, resolve_in_workspace, unified_diff
 from .registry import ToolRegistry
 
 _FETCH_TIMEOUT_S = 30
@@ -1119,9 +1119,13 @@ def analyze_image(path: str = "", url: str = "", question: str = "") -> dict:
     """Analyze a local image or http(s) image URL with the vision model.
 
     Use for screenshots, UI mockups, error dialogs, or when browser_screenshot
-    analyze=true. Prefer workspace-local paths from browser_screenshot.
+    analyze=true. Absolute paths outside the workspace are allowed (read-only),
+    e.g. Downloads screenshots — no need to copy into the project first.
 
-    :param path: Local image path (png/jpg/webp/gif); workspace-relative ok.
+    CRITICAL: After success, your reply/finish summary MUST include the full
+    `analysis` text for the user. Do not finish with only 「临时文件已删除」.
+
+    :param path: Local image path (png/jpg/webp/gif); absolute or workspace-relative.
     :param url: Optional http(s) image URL (alternative to path).
     :param question: What to answer about the image (default: describe UI/errors).
     """
@@ -1754,14 +1758,12 @@ def _analyze_image_impl(
 
     image_url = ""
     source = ""
-    p = (path or "").strip()
+    p = (path or "").strip().strip('"').strip("'")
     u = (url or "").strip()
     if p:
-        resolved, err = resolve_in_workspace(p)
+        resolved, err = resolve_existing_file(p, allow_outside_workspace=True)
         if err or resolved is None:
             return {"success": False, "error": err or "invalid path"}
-        if not resolved.is_file():
-            return {"success": False, "error": f"No such file: {resolved}"}
         suffix = resolved.suffix.lower()
         mime = _VISION_MIME.get(suffix)
         if not mime:
@@ -1798,6 +1800,8 @@ def _analyze_image_impl(
         ],
         "temperature": 0.0,
         "max_tokens": 1200,
+        # GLM-4.6V etc. may spend the budget on reasoning unless disabled.
+        "thinking": {"type": "disabled"},
     }
     req = Request(
         endpoint,
@@ -1838,8 +1842,12 @@ def _analyze_image_impl(
             "preview": body[:300],
         }
     try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
+        message = data["choices"][0]["message"]
+        content = message.get("content")
+        if not (isinstance(content, str) and content.strip()):
+            # Some VLMs put the answer in reasoning_content when thinking is on.
+            content = message.get("reasoning_content") or content
+    except (KeyError, IndexError, TypeError, AttributeError):
         err = data.get("error") if isinstance(data, dict) else None
         return {
             "success": False,

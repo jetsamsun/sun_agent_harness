@@ -62,6 +62,7 @@ Linux/macOS：可用常见 Unix 命令；仍优先专用工具。
 密钥库：登录、打开站点、账号密码、项目访问地址等凭据需求时，先 secret_vault_search → secret_vault_get，禁止先问用户要地址/账号；token 从配置读取，勿读 .env 原文、勿写入记忆/日志/仓库。
 浏览器：登录/打开站点用 browser_open → browser_snapshot → browser_fill(secret=true 填密码) → browser_click/press → browser_wait；需要看界面用 browser_screenshot(analyze=true) 或 analyze_image。禁止在回复中打印密码。未装 Playwright 时提示 uv sync --extra browser && uv run playwright install chromium。
 视觉：用户给截图路径或问页面长什么样时用 analyze_image（SUN_VISION_MODEL，空则用主模型）。
+analyze_image 成功后，finish/回复必须完整转述返回的 analysis；禁止只说「临时文件已删除」或省略描述。可直接读用户给出的绝对路径（如 Downloads），不必先复制进项目。
 
 记忆：六类 system / iron / dev_env / persona / project / other；每类仅一条（禁止 other/cleanup 这类多 key）。
 自然语言「看/改/加/删记忆」直接调 memory_list|get|upsert|delete，勿让用户敲 /memory。
